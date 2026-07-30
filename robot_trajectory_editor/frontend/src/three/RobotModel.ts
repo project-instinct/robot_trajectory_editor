@@ -52,11 +52,11 @@ export class RobotModel {
     for (const [, info] of this.jointMap) {
       const val = jointValues[info.index]
       if (val !== undefined) {
-        info.urdfJoint.rotation.set(0, 0, val)
+        this.urdfRobot.setJointValue(info.name, val)
       }
     }
 
-    this.urdfRobot.updateMatrixWorld()
+    this.rootGroup.updateMatrixWorld()
   }
 
   setPinned(linkName: string | null): void {
