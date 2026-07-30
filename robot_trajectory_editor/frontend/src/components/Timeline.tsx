@@ -4,34 +4,59 @@ import { useRef, useEffect, useCallback } from 'react'
 export function Timeline() {
   const { trajectory, currentFrame, setCurrentFrame, selectedChannel, segmentStart, segmentEnd, setSegment } = useStore()
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const draggingRef = useRef(false)
+
+  const frameFromEvent = useCallback((e: MouseEvent | React.MouseEvent): number => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return 0
+    return Math.max(0, Math.min(
+      Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1)),
+      trajectory.frameCount - 1
+    ))
+  }, [trajectory.frameCount])
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect || trajectory.frameCount < 1) return
-    const x = e.clientX - rect.left
-    const frame = Math.round((x / rect.width) * (trajectory.frameCount - 1))
-    setCurrentFrame(Math.max(0, Math.min(frame, trajectory.frameCount - 1)))
-  }, [trajectory.frameCount, setCurrentFrame])
+    if (trajectory.frameCount < 1) return
+    setCurrentFrame(frameFromEvent(e))
+  }, [trajectory.frameCount, setCurrentFrame, frameFromEvent])
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!e.shiftKey || trajectory.frameCount < 1) return
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const frame = Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1))
-    setSegment(frame, null)
-  }, [trajectory.frameCount, setSegment])
+    draggingRef.current = true
+    setSegment(frameFromEvent(e), null)
+  }, [trajectory.frameCount, setSegment, frameFromEvent])
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (segmentStart === null) return
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const frame = Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1))
-    setSegment(segmentStart, frame)
-  }, [segmentStart, setSegment, trajectory.frameCount])
+  useEffect(() => {
+    const handleWindowMouseMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const frame = Math.max(0, Math.min(
+        Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1)),
+        trajectory.frameCount - 1
+      ))
+      const store = useStore.getState()
+      if (store.segmentStart !== null) {
+        store.setSegment(store.segmentStart, frame)
+      }
+    }
 
-  const handleMouseUp = useCallback(() => {
-    if (segmentStart !== null && segmentEnd === null) setSegment(null, null)
-  }, [segmentStart, segmentEnd, setSegment])
+    const handleWindowMouseUp = () => {
+      if (!draggingRef.current) return
+      draggingRef.current = false
+      const store = useStore.getState()
+      if (store.segmentStart !== null && store.segmentEnd === null) {
+        store.setSegment(null, null)
+      }
+    }
+
+    window.addEventListener('mousemove', handleWindowMouseMove)
+    window.addEventListener('mouseup', handleWindowMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove)
+      window.removeEventListener('mouseup', handleWindowMouseUp)
+    }
+  }, [trajectory.frameCount])
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault()
@@ -66,13 +91,27 @@ export function Timeline() {
       }
 
       if (selectedChannel && trajectory.frameCount > 1) {
+        let vMin = Infinity
+        let vMax = -Infinity
+        for (let f = 0; f < trajectory.frameCount; f++) {
+          const v = trajectory.getChannelValue(f, selectedChannel)
+          if (v < vMin) vMin = v
+          if (v > vMax) vMax = v
+        }
+        if (vMin === vMax) { vMin -= 0.1; vMax += 0.1 }
+        const margin = (vMax - vMin) * 0.1
+        vMin -= margin
+        vMax += margin
+        const vRange = vMax - vMin
+
         ctx.strokeStyle = '#4af'
         ctx.lineWidth = 2
         ctx.beginPath()
         for (let f = 0; f < trajectory.frameCount; f++) {
           const x = (f / (trajectory.frameCount - 1)) * cw
-          let val = trajectory.getChannelValue(f, selectedChannel)
-          const y = ch * 0.5 - (val / (Math.PI * 2)) * ch * 0.3 + ch * 0.15
+          const val = trajectory.getChannelValue(f, selectedChannel)
+          const t = (val - vMin) / vRange
+          const y = ch * 0.85 - t * ch * 0.7
           if (f === 0) ctx.moveTo(x, y)
           else ctx.lineTo(x, y)
         }
@@ -99,8 +138,8 @@ export function Timeline() {
       ctx.stroke()
 
       if (segmentStart !== null && segmentEnd !== null) {
-        const sx = (segmentStart / (trajectory.frameCount - 1)) * cw
-        const ex = (segmentEnd / (trajectory.frameCount - 1)) * cw
+        const sx = (Math.min(segmentStart, segmentEnd) / (trajectory.frameCount - 1)) * cw
+        const ex = (Math.max(segmentStart, segmentEnd) / (trajectory.frameCount - 1)) * cw
         ctx.fillStyle = 'rgba(100, 100, 255, 0.2)'
         ctx.fillRect(sx, 0, ex - sx, ch)
       }
@@ -118,8 +157,6 @@ export function Timeline() {
       onClick={handleCanvasClick}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
     />
   )
 }

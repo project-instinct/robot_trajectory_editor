@@ -1,5 +1,8 @@
 import { useStore } from '../state/store'
 
+const basePosLabels = ['x', 'y', 'z']
+const baseQuatLabels = ['w', 'x', 'y', 'z']
+
 export function TargetPanel() {
   const { trajectory, selectedChannel, setSelectedChannel } = useStore()
 
@@ -7,6 +10,18 @@ export function TargetPanel() {
     const idx = parseInt(e.target.value)
     if (isNaN(idx)) { setSelectedChannel(null); return }
     setSelectedChannel({ kind: 'joint', index: idx })
+  }
+
+  const handleBasePosSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const axis = parseInt(e.target.value)
+    if (isNaN(axis)) { setSelectedChannel(null); return }
+    setSelectedChannel({ kind: 'basePos', axis })
+  }
+
+  const handleBaseQuatSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const axis = parseInt(e.target.value)
+    if (isNaN(axis)) { setSelectedChannel(null); return }
+    setSelectedChannel({ kind: 'baseQuat', axis })
   }
 
   return (
@@ -19,8 +34,20 @@ export function TargetPanel() {
           <option key={i} value={i}>{name}</option>
         ))}
       </select>
-      <button onClick={() => setSelectedChannel({ kind: 'basePos' })}>Base Position</button>
-      <button onClick={() => setSelectedChannel({ kind: 'baseQuat' })}>Base Orientation</button>
+      <label>Base Position:</label>
+      <select onChange={handleBasePosSelect} value={selectedChannel?.kind === 'basePos' ? selectedChannel.axis : ''}>
+        <option value="">--</option>
+        {basePosLabels.map((label, i) => (
+          <option key={i} value={i}>{label}</option>
+        ))}
+      </select>
+      <label>Base Orientation:</label>
+      <select onChange={handleBaseQuatSelect} value={selectedChannel?.kind === 'baseQuat' ? selectedChannel.axis : ''}>
+        <option value="">--</option>
+        {baseQuatLabels.map((label, i) => (
+          <option key={i} value={i}>{label}</option>
+        ))}
+      </select>
     </div>
   )
 }

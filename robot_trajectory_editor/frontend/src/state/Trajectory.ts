@@ -1,4 +1,4 @@
-export type ChannelKind = { kind: 'joint'; index: number } | { kind: 'basePos' } | { kind: 'baseQuat' }
+export type ChannelKind = { kind: 'joint'; index: number } | { kind: 'basePos'; axis: number } | { kind: 'baseQuat'; axis: number }
 
 export interface FrameState {
   jointPos: Float32Array
@@ -114,8 +114,8 @@ export class Trajectory {
 
   getChannelValue(frame: number, channel: ChannelKind): number {
     if (channel.kind === 'joint') return this.jointPos[frame * this.jointCount + channel.index]
-    if (channel.kind === 'basePos') return this.basePoseW[frame * 3] // simplified; full needs component axis
-    return this.baseQuatW[frame * 4]
+    if (channel.kind === 'basePos') return this.basePoseW[frame * 3 + channel.axis]
+    return this.baseQuatW[frame * 4 + channel.axis]
   }
 
   getChannelValues(channel: ChannelKind): Float32Array {
@@ -126,21 +126,12 @@ export class Trajectory {
       return out
     }
     if (channel.kind === 'basePos') {
-      const out = new Float32Array(count * 3)
-      for (let f = 0; f < count; f++) {
-        out[f * 3] = this.basePoseW[f * 3]
-        out[f * 3 + 1] = this.basePoseW[f * 3 + 1]
-        out[f * 3 + 2] = this.basePoseW[f * 3 + 2]
-      }
+      const out = new Float32Array(count)
+      for (let f = 0; f < count; f++) out[f] = this.basePoseW[f * 3 + channel.axis]
       return out
     }
-    const out = new Float32Array(count * 4)
-    for (let f = 0; f < count; f++) {
-      out[f * 4] = this.baseQuatW[f * 4]
-      out[f * 4 + 1] = this.baseQuatW[f * 4 + 1]
-      out[f * 4 + 2] = this.baseQuatW[f * 4 + 2]
-      out[f * 4 + 3] = this.baseQuatW[f * 4 + 3]
-    }
+    const out = new Float32Array(count)
+    for (let f = 0; f < count; f++) out[f] = this.baseQuatW[f * 4 + channel.axis]
     return out
   }
 
@@ -156,9 +147,9 @@ export class Trajectory {
     if (channel.kind === 'joint') {
       this.smoothJointChannel(start, end, channel.index)
     } else if (channel.kind === 'basePos') {
-      for (let axis = 0; axis < 3; axis++) this.smoothBaseChannel(start, end, axis, 'pos')
+      this.smoothBaseChannel(start, end, channel.axis, 'pos')
     } else {
-      for (let axis = 0; axis < 4; axis++) this.smoothBaseChannel(start, end, axis, 'quat')
+      this.smoothBaseChannel(start, end, channel.axis, 'quat')
       for (let f = start; f <= end; f++) {
         const x = this.baseQuatW[f * 4]
         const y = this.baseQuatW[f * 4 + 1]
