@@ -41,11 +41,12 @@ export const useStore = create<StoreState>((set, get) => ({
   setRobotModelLoaded: (l) => set({ robotModelLoaded: l }),
 
   fillRange: () => {
-    const { trajectory, currentFrame, segmentStart, segmentEnd } = get()
-    const state = trajectory.getFrame(currentFrame)
+    const { trajectory, currentFrame, selectedChannel, segmentStart, segmentEnd } = get()
+    if (!selectedChannel) return
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
-    trajectory.fillRange(start, end, state)
+    const value = trajectory.getChannelValue(currentFrame, selectedChannel)
+    trajectory.fillChannel(start, end, selectedChannel, value)
     set({ trajectory: trajectory })
   },
 

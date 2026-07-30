@@ -143,6 +143,16 @@ export class Trajectory {
     }
   }
 
+  fillChannel(start: number, end: number, channel: ChannelKind, value: number): void {
+    if (channel.kind === 'joint') {
+      for (let f = start; f <= end; f++) this.jointPos[f * this.jointCount + channel.index] = value
+    } else if (channel.kind === 'basePos') {
+      for (let f = start; f <= end; f++) this.basePoseW[f * 3 + channel.axis] = value
+    } else {
+      for (let f = start; f <= end; f++) this.baseQuatW[f * 4 + channel.axis] = value
+    }
+  }
+
   smoothRange(start: number, end: number, channel: ChannelKind): void {
     if (channel.kind === 'joint') {
       this.smoothJointChannel(start, end, channel.index)
