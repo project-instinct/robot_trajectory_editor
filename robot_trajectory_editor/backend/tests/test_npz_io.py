@@ -16,7 +16,7 @@ def make_synthetic_payload(frame_count=10, joint_count=7):
         "framerate": 50.0,
         "joint_names": [f"joint_{i}" for i in range(joint_count)],
         "joint_pos": np.random.randn(frame_count, joint_count).astype(np.float32).tolist(),
-        "base_pose_w": np.random.randn(frame_count, 3).astype(np.float32).tolist(),
+        "base_pos_w": np.random.randn(frame_count, 3).astype(np.float32).tolist(),
         "base_quat_w": np.random.randn(frame_count, 4).astype(np.float32).tolist(),
     }
 
@@ -29,7 +29,7 @@ def test_roundtrip():
     assert result["framerate"] == payload["framerate"]
     assert result["joint_names"] == payload["joint_names"]
     np.testing.assert_allclose(result["joint_pos"], payload["joint_pos"])
-    np.testing.assert_allclose(result["base_pose_w"], payload["base_pose_w"])
+    np.testing.assert_allclose(result["base_pos_w"], payload["base_pos_w"])
     np.testing.assert_allclose(result["base_quat_w"], payload["base_quat_w"])
 
 
@@ -53,7 +53,7 @@ def test_dtypes():
         data = np.load(buf.name, allow_pickle=True)
         assert data["framerate"].dtype == np.float32
         assert data["joint_pos"].dtype == np.float32
-        assert data["base_pose_w"].dtype == np.float32
+        assert data["base_pos_w"].dtype == np.float32
         assert data["base_quat_w"].dtype == np.float32
     finally:
         os.unlink(buf.name)
@@ -64,7 +64,7 @@ def test_empty_trajectory():
         "framerate": 1.0,
         "joint_names": [],
         "joint_pos": [],
-        "base_pose_w": [],
+        "base_pos_w": [],
         "base_quat_w": [],
     }
     npz_bytes = serialize_npz(payload)
@@ -72,5 +72,5 @@ def test_empty_trajectory():
     assert result["framerate"] == 1.0
     assert result["joint_names"] == []
     assert result["joint_pos"] == []
-    assert result["base_pose_w"] == []
+    assert result["base_pos_w"] == []
     assert result["base_quat_w"] == []

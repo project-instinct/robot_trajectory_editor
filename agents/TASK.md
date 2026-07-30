@@ -16,7 +16,7 @@ This is the source code of a web-based robot trajectory editor. It allows users 
   - `framerate`: a np array of Size[] type float32, representing the framerate of the trajectory.
   - `joint_names`: a 1D np array of type string, representing the names of the robot joints. It's ordered according to the joint position sequence.
   - `joint_pos`: a 2D np array of Size[frame_count, joint_count] type float32, representing the joint position sequence of the robot trajectory.
-  - `base_pose_w`: a 2D np array of Size[frame_count, 3] type float32, representing the robot base position sequence in world coordinates (in x,y,z order)
+  - `base_pos_w`: a 2D np array of Size[frame_count, 3] type float32, representing the robot base position sequence in world coordinates (in x,y,z order)
   - `base_quat_w`: a 2D np array of Size[frame_count, 4] type float32, representing the robot base orientation sequence in world coordinates (in w,x,y,z order)
 
 ### User Interface

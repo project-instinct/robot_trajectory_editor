@@ -17,6 +17,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const [showRobotSelect, setShowRobotSelect] = useState(false)
   const [urdfList, setUrdfList] = useState<{ path: string; name: string }[]>([])
   const [selectedUrdf, setSelectedUrdf] = useState('')
+  const [loadError, setLoadError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const terrainInputRef = useRef<HTMLInputElement>(null)
   const robotFolderRef = useRef<HTMLInputElement>(null)
@@ -42,7 +43,9 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       try {
         const data = await parseTrajectory(file)
         setTrajectory(Trajectory.fromJSON(data))
+        setLoadError('')
       } catch (e) {
+        setLoadError(e instanceof Error ? e.message : String(e))
         console.error('Failed to load trajectory:', e)
       }
       input.value = ''
@@ -129,6 +132,9 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       <button onClick={onEditTerrain}>Edit Terrain</button>
       {showRobotSelect && (
         <button onClick={handleLoadRobot}>Load Robot URDF</button>
+      )}
+      {loadError && (
+        <div style={{ color: '#f66', fontSize: '11px', marginTop: '4px' }}>{loadError}</div>
       )}
       {urdfList.length > 1 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px', padding: '6px', background: '#2a2a4e', borderRadius: '4px' }}>

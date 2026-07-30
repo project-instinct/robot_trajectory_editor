@@ -46,7 +46,8 @@ function TerrainViewport({ terrain }: { terrain: THREE.Group | null }) {
     scene.background = new THREE.Color(0x1a1a2e)
 
     const camera = new THREE.PerspectiveCamera(50, el.clientWidth / el.clientHeight, 0.01, 1000)
-    camera.position.set(5, 5, 5)
+    camera.up.set(0, 0, 1)
+    camera.position.set(5, -5, 5)
     camera.lookAt(0, 0, 0)
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -54,11 +55,12 @@ function TerrainViewport({ terrain }: { terrain: THREE.Group | null }) {
     el.appendChild(renderer.domElement)
 
     const orbitControls = new OrbitControls(camera, renderer.domElement)
+    orbitControls.target.set(0, 0, 0)
 
     const ambient = new THREE.AmbientLight(0x404060, 2)
     scene.add(ambient)
     const dir = new THREE.DirectionalLight(0xffffff, 2)
-    dir.position.set(5, 10, 5)
+    dir.position.set(5, 5, 10)
     scene.add(dir)
 
     const grid = new THREE.GridHelper(10, 10, 0x444466, 0x222244)

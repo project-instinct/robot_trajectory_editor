@@ -33,7 +33,10 @@ export async function parseTrajectory(file: File): Promise<TrajectoryJSON> {
   const formData = new FormData()
   formData.append('file', file)
   const res = await fetch(`${BASE}/trajectory/parse`, { method: 'POST', body: formData })
-  if (!res.ok) throw new Error('Failed to parse trajectory')
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || 'Failed to parse trajectory')
+  }
   return res.json()
 }
 

@@ -10,7 +10,7 @@ export interface TrajectoryJSON {
   framerate: number
   joint_names: string[]
   joint_pos: number[][]
-  base_pose_w: number[][]
+  base_pos_w: number[][]
   base_quat_w: number[][]
 }
 
@@ -58,7 +58,7 @@ export class Trajectory {
       data.framerate,
       jointNames,
       new Float32Array(data.joint_pos.flat()),
-      new Float32Array(data.base_pose_w.flat()),
+      new Float32Array(data.base_pos_w.flat()),
       new Float32Array(data.base_quat_w.flat()),
     )
   }
@@ -66,20 +66,20 @@ export class Trajectory {
   toJSON(): TrajectoryJSON {
     const jc = this.jointCount
     const joint_pos: number[][] = []
-    const base_pose_w: number[][] = []
+    const base_pos_w: number[][] = []
     const base_quat_w: number[][] = []
     for (let f = 0; f < this.frameCount; f++) {
       const jp: number[] = []
       for (let j = 0; j < jc; j++) jp.push(this.jointPos[f * jc + j])
       joint_pos.push(jp)
-      base_pose_w.push([this.basePoseW[f * 3], this.basePoseW[f * 3 + 1], this.basePoseW[f * 3 + 2]])
+      base_pos_w.push([this.basePoseW[f * 3], this.basePoseW[f * 3 + 1], this.basePoseW[f * 3 + 2]])
       base_quat_w.push([this.baseQuatW[f * 4], this.baseQuatW[f * 4 + 1], this.baseQuatW[f * 4 + 2], this.baseQuatW[f * 4 + 3]])
     }
     return {
       framerate: this.framerate,
       joint_names: this.jointNames,
       joint_pos,
-      base_pose_w,
+      base_pos_w,
       base_quat_w,
     }
   }

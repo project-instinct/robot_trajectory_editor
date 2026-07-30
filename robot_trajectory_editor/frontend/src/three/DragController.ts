@@ -52,6 +52,9 @@ export class DragController {
     const robot = this._robot
     if (!robot) return
 
+    const store = useStore.getState()
+    if (store.trajectory.frameCount === 0) return
+
     this.getPointerPosition(event)
     this.raycaster.setFromCamera(this.mouse, this.viewport.camera)
 
@@ -66,7 +69,6 @@ export class DragController {
       intersects[0].point,
     )
 
-    const store = useStore.getState()
     if (store.pinnedLink && this._robot) {
       const linkMeshes = this._robot.linkMeshes.get(store.pinnedLink)
       if (linkMeshes && linkMeshes.length > 0) {
@@ -88,6 +90,8 @@ export class DragController {
 
     const store = useStore.getState()
     const { trajectory, currentFrame, pinnedLink } = store
+
+    if (trajectory.frameCount === 0) return
 
     if (pinnedLink && this._robot && this.pinnedWorldTarget) {
       const delta = intersect.clone().sub(this.dragStartPoint)
