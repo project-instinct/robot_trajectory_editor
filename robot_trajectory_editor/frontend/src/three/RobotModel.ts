@@ -52,8 +52,7 @@ export class RobotModel {
     for (const [, info] of this.jointMap) {
       const val = jointValues[info.index]
       if (val !== undefined) {
-        info.urdfJoint.rotation.set(0, 0, 0)
-        info.urdfJoint.rotateOnWorldAxis(new THREE.Vector3(0, 0, 1), val)
+        info.urdfJoint.rotation.set(0, 0, val)
       }
     }
 
