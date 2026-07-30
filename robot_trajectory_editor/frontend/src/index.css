@@ -1,0 +1,80 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #12121e;
+  color: #ccc;
+  font-family: monospace;
+}
+
+button {
+  padding: 4px 8px;
+  background: #2a2a4e;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+button:hover {
+  background: #3a3a6e;
+}
+
+select, input {
+  padding: 2px 4px;
+  background: #2a2a4e;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: #3a3a6e;
+  border: none;
+  border-radius: 3px;
+  padding: 0;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #4af;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+h3, h4 {
+  color: #88aacc;
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+h4 {
+  font-size: 12px;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #1a1a2e;
+}
+::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
+}
