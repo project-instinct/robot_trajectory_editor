@@ -6,6 +6,7 @@ import { Goal } from 'closed-chain-ik/src/core/Goal.js'
 import { Joint } from 'closed-chain-ik/src/core/Joint.js'
 import type { DOF } from 'closed-chain-ik/src/core/Joint.js'
 import { Link } from 'closed-chain-ik/src/core/Link.js'
+import { Frame } from 'closed-chain-ik/src/core/Frame.js'
 import { urdfRobotToIKRoot } from 'closed-chain-ik/src/three/urdfHelpers.js'
 import type { URDFRobot } from 'urdf-loader'
 
@@ -67,6 +68,21 @@ export class IkSolver {
 
   hasLink(linkName: string): boolean {
     return this.ikLinks.has(linkName)
+  }
+
+  /** Counts actuated DoF from the link up to the IK root (excluding the base). */
+  getChainActuatedDoF(linkName: string): number {
+    const link = this.ikLinks.get(linkName)
+    if (!link) return 0
+    let count = 0
+    let curr: Frame | null = link.parent
+    while (curr) {
+      if (curr instanceof Joint && curr.dof.length > 0) {
+        count += curr.dof.length
+      }
+      curr = curr.parent
+    }
+    return count
   }
 
   /** Sets the base pose (xyz + wxyz) and joint values the solve starts from. */

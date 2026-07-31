@@ -172,6 +172,7 @@ export class DragController {
     } else {
       const pose = this.robot.getLinkWorldPose(linkName)
       if (!pose) return
+      this.ikSolver?.clearGoal()
       this.pinnedPos.copy(pose.pos)
       this.pinnedQuat.copy(pose.quat)
       store.setPinnedLink(linkName)
@@ -205,7 +206,11 @@ export class DragController {
 
       if (pinnedLink && this.ikSolver?.hasLink(pinnedLink)) {
         this.ikSolver.setConfiguration(newPos, newQuat, this.frameJointMap())
-        this.ikSolver.solvePoseGoal(pinnedLink, this.pinnedPos, this.pinnedQuat)
+        if (this.ikSolver.getChainActuatedDoF(pinnedLink) >= 6) {
+          this.ikSolver.solvePoseGoal(pinnedLink, this.pinnedPos, this.pinnedQuat)
+        } else {
+          this.ikSolver.solvePositionGoal(pinnedLink, this.pinnedPos)
+        }
         this.writeSolvedJoints(this.ikSolver.getJointValues())
       }
     } else if (this.mode === 'link' && this.ikSolver) {
