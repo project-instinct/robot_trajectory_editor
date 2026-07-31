@@ -33,7 +33,8 @@ export interface StoreState {
   setFrameStep: (step: number) => void
   /** Move the current frame by ±frameStep, clamped to the trajectory range. */
   stepFrame: (direction: 1 | -1) => void
-  /** Fill segment (or whole trajectory) with the current frame's full robot state. */
+  /** Fill the segment (or whole trajectory) of the selected channel with the
+   *  current frame's value of that channel. */
   fillRange: () => void
   /** Low-pass smooth of the selected channel over the segment (or whole trajectory):
    *  removes high-frequency jitter, preserves the overall motion shape. */
@@ -81,12 +82,12 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   fillRange: () => {
-    const { trajectory, currentFrame, segmentStart, segmentEnd } = get()
-    if (trajectory.frameCount === 0) return
+    const { trajectory, selectedChannel, currentFrame, segmentStart, segmentEnd } = get()
+    if (!selectedChannel || trajectory.frameCount === 0) return
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
-    const state = trajectory.getFrame(currentFrame)
-    trajectory.fillRange(start, end, state)
+    const value = trajectory.getChannelValue(currentFrame, selectedChannel)
+    trajectory.fillChannelRange(start, end, selectedChannel, value)
     get().touchTrajectory()
   },
 

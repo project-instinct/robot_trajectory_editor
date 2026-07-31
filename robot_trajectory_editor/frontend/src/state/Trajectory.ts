@@ -198,12 +198,10 @@ export class Trajectory {
     return out
   }
 
-  fillRange(start: number, end: number, state: FrameState): void {
-    for (let f = start; f <= end; f++) {
-      for (let j = 0; j < this.jointCount; j++) this.jointPos[f * this.jointCount + j] = state.jointPos[j]
-      for (let i = 0; i < 3; i++) this.basePoseW[f * 3 + i] = state.basePoseW[i]
-      for (let i = 0; i < 4; i++) this.baseQuatW[f * 4 + i] = state.baseQuatW[i]
-    }
+  /** Fill one channel over [start, end] with a constant value, leaving all
+   *  other channels (and, for baseQuat, the other euler axes) untouched. */
+  fillChannelRange(start: number, end: number, channel: ChannelKind, value: number): void {
+    for (let f = start; f <= end; f++) this.setChannelValue(f, channel, value)
   }
 
   setChannelValue(frame: number, channel: ChannelKind, value: number): void {

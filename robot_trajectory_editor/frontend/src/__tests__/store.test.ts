@@ -29,6 +29,49 @@ beforeEach(() => {
   })
 })
 
+describe('fillRange', () => {
+  it('fills only the selected channel over the selected segment with the current value', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 0 })
+    s().setSegment(2, 5)
+    // current frame is 3: joint 0 value there is 0.3
+    s().fillRange()
+
+    const t = s().trajectory
+    for (let f = 2; f <= 5; f++) {
+      expect(t.getChannelValue(f, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+    }
+    // outside the segment untouched
+    expect(t.getChannelValue(1, { kind: 'joint', index: 0 })).toBeCloseTo(0.1)
+    expect(t.getChannelValue(6, { kind: 'joint', index: 0 })).toBeCloseTo(0.6)
+    // other channels untouched even inside the segment
+    for (let f = 2; f <= 5; f++) {
+      expect(t.getChannelValue(f, { kind: 'joint', index: 1 })).toBeCloseTo(f * 0.1 + 0.01)
+      expect(t.getChannelValue(f, { kind: 'basePos', axis: 2 })).toBeCloseTo(1.0)
+    }
+    expect(s().trajectoryVersion).toBe(1)
+  })
+
+  it('fills the whole trajectory when no segment is selected', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'basePos', axis: 2 })
+    // give the current frame a distinct value so the fill is observable
+    s().trajectory.setChannelValue(3, { kind: 'basePos', axis: 2 }, 2.5)
+    s().fillRange()
+    for (let f = 0; f < 10; f++) {
+      expect(s().trajectory.getChannelValue(f, { kind: 'basePos', axis: 2 })).toBeCloseTo(2.5)
+    }
+  })
+
+  it('is a no-op without a selected channel', () => {
+    const s = () => useStore.getState()
+    s().setSegment(2, 5)
+    s().fillRange()
+    expect(s().trajectoryVersion).toBe(0)
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+  })
+})
+
 describe('stepFrame', () => {
   it('moves the current frame by frameStep in both directions', () => {
     const s = () => useStore.getState()

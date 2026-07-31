@@ -45,7 +45,7 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - On the right, there is a panel for special operation buttons, such as "Fill", "Smooth", "Play", "Pause".
 
-    - "Fill": Automatically fills the entire trajectory with the current robot state when clicked. If a segment of the timeline is selected, only that segment will be filled. If no segment is selected, the entire trajectory will be filled.
+    - "Fill": Automatically fills the selected `Edit Target` channel with its value at the current frame when clicked. If a segment of the timeline is selected, only that segment of the channel will be filled. If no segment is selected, the entire channel will be filled. All other channels are left unchanged.
 
     - "Smooth": Removes high-frequency jitter from the selected state trajectory (low-pass filtering) when clicked, while preserving the overall shape of the motion. If a segment of the tlimeline is selected, only that segment will be smoothed. If no segment is selected, the entire trajectory will be smoothed.
 

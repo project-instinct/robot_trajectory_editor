@@ -176,16 +176,34 @@ describe('Trajectory', () => {
     expect(t.basePoseW[2 * 3 + 2]).toBeCloseTo(1.5)
   })
 
-  it('should fill range with full robot state', () => {
+  it('should fill only the selected channel over the range', () => {
     const t = makeTrajectory(5, 2)
-    t.setJointValue(0, 0, 9.99)
-    const sourceState = t.getFrame(0)
-    t.fillRange(1, 3, sourceState)
+    t.fillChannelRange(1, 3, { kind: 'joint', index: 0 }, 9.99)
 
     for (let f = 1; f <= 3; f++) {
-      const frame = t.getFrame(f)
-      expect(frame.jointPos[0]).toBeCloseTo(9.99)
-      expect(frame.basePoseW[0]).toBeCloseTo(0)
+      expect(t.jointPos[f * 2]).toBeCloseTo(9.99)
+      // other channels untouched
+      expect(t.jointPos[f * 2 + 1]).toBeCloseTo(f * 0.1 + 0.01)
+      expect(t.basePoseW[f * 3]).toBeCloseTo(f * 0.01)
+    }
+    // frames outside the range untouched
+    expect(t.jointPos[0]).toBeCloseTo(0)
+    expect(t.jointPos[4 * 2]).toBeCloseTo(0.4)
+  })
+
+  it('should fill one base-orientation axis while preserving the others', () => {
+    const t = makeTrajectory(4, 1)
+    t.setQuatEuler(2, 0.3, -0.2, 0.1)
+    t.fillChannelRange(1, 2, { kind: 'baseQuat', axis: 1 }, 0.5)
+
+    for (const f of [1, 2]) {
+      const [roll, pitch, yaw] = t.getQuatEuler(f)
+      expect(pitch).toBeCloseTo(0.5)
+      // roll/yaw keep their per-frame values
+      expect(roll).toBeCloseTo(f === 2 ? 0.3 : 0)
+      expect(yaw).toBeCloseTo(f === 2 ? 0.1 : 0)
+      const q = t.getFrame(f).baseQuatW
+      expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1)
     }
   })
 
