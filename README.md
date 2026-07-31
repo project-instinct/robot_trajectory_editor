@@ -6,7 +6,7 @@ Web-based editor for robot trajectories. Create, edit, and visualize robot joint
 
 ```bash
 # Launch both backend + frontend (backend conda env overridable via CONDA_ENV)
-./launch.sh [--robot-urdf /path/to/robot.urdf] [--port 5000]
+./launch.sh [--robot-urdf /path/to/robot.urdf] [--port 5000] [--nudge-step 0.01] [--frame-step 1]
 ```
 
 Then open http://localhost:5173.
@@ -63,15 +63,24 @@ cd robot_trajectory_editor/frontend && npm test
 - Drag keyframe: horizontal = retime anchor, vertical = edit selected channel value
 - Right-click keyframe: remove it
 
+## Keyboard Shortcuts
+
+- `Up` / `Down`: nudge the selected Edit Target's value at the current frame by `--nudge-step`
+- `Left` / `Right`: step the current frame backward/forward by `--frame-step` (works with or without an Edit Target selected)
+- `Space`: toggle trajectory playback (play/pause)
+- `Esc`: unpin the pinned link, or clear the segment selection
+
 ## CLI Options
 
 ```
-python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1]
+python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nudge-step 0.01] [--frame-step 1]
 ```
 
 - `--robot-urdf`: Local path to a URDF file
 - `--port`: Flask server port (default 5000)
 - `--host`: Flask server host (default 127.0.0.1)
+- `--nudge-step`: Value step applied by the Up/Down arrow keys on the selected edit target (default 0.01)
+- `--frame-step`: Frame step applied by the Left/Right arrow keys (default 1)
 
 ## `.npz` Format
 

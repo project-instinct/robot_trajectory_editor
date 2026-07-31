@@ -2,6 +2,11 @@ import type { TrajectoryJSON } from '../state/Trajectory'
 
 const BASE = '/api'
 
+export async function getConfig(): Promise<{ nudge_step: number; frame_step: number }> {
+  const res = await fetch(`${BASE}/config`)
+  return res.json()
+}
+
 export async function getRobotInfo(): Promise<{ has_urdf: boolean; urdf_path: string | null }> {
   const res = await fetch(`${BASE}/robot/info`)
   return res.json()

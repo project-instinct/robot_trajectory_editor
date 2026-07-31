@@ -12,6 +12,10 @@ export interface StoreState {
   isPlaying: boolean
   pinnedLink: string | null
   robotModelLoaded: boolean
+  /** Value step applied by the Up/Down arrow keys (from backend /api/config). */
+  nudgeStep: number
+  /** Frame step applied by the Left/Right arrow keys (from backend /api/config). */
+  frameStep: number
 
   /** Load a new trajectory (resets playback position). */
   setTrajectory: (t: Trajectory) => void
@@ -23,6 +27,12 @@ export interface StoreState {
   setIsPlaying: (p: boolean) => void
   setPinnedLink: (name: string | null) => void
   setRobotModelLoaded: (l: boolean) => void
+  setNudgeStep: (step: number) => void
+  /** Move the selected channel's value at the current frame by ±nudgeStep. */
+  nudgeSelectedChannel: (direction: 1 | -1) => void
+  setFrameStep: (step: number) => void
+  /** Move the current frame by ±frameStep, clamped to the trajectory range. */
+  stepFrame: (direction: 1 | -1) => void
   /** Fill segment (or whole trajectory) with the current frame's full robot state. */
   fillRange: () => void
   /** Low-pass smooth of the selected channel over the segment (or whole trajectory):
@@ -40,6 +50,8 @@ export const useStore = create<StoreState>((set, get) => ({
   isPlaying: false,
   pinnedLink: null,
   robotModelLoaded: false,
+  nudgeStep: 0.01,
+  frameStep: 1,
 
   setTrajectory: (t) => set({ trajectory: t, currentFrame: 0 }),
   touchTrajectory: () => set(s => ({ trajectoryVersion: s.trajectoryVersion + 1 })),
@@ -49,6 +61,24 @@ export const useStore = create<StoreState>((set, get) => ({
   setIsPlaying: (p) => set({ isPlaying: p }),
   setPinnedLink: (name) => set({ pinnedLink: name }),
   setRobotModelLoaded: (l) => set({ robotModelLoaded: l }),
+  setNudgeStep: (step) => set({ nudgeStep: step }),
+
+  nudgeSelectedChannel: (direction) => {
+    const { trajectory, selectedChannel, currentFrame, nudgeStep } = get()
+    if (!selectedChannel || trajectory.frameCount === 0) return
+    const value = trajectory.getChannelValue(currentFrame, selectedChannel) + direction * nudgeStep
+    trajectory.setChannelValue(currentFrame, selectedChannel, value)
+    get().touchTrajectory()
+  },
+
+  setFrameStep: (step) => set({ frameStep: step }),
+
+  stepFrame: (direction) => {
+    const { trajectory, currentFrame, frameStep } = get()
+    if (trajectory.frameCount === 0) return
+    const next = Math.min(Math.max(currentFrame + direction * frameStep, 0), trajectory.frameCount - 1)
+    if (next !== currentFrame) set({ currentFrame: next })
+  },
 
   fillRange: () => {
     const { trajectory, currentFrame, segmentStart, segmentEnd } = get()

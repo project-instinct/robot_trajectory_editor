@@ -61,6 +61,12 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
         - The user can double-click the fixed link again to unfix it, and the editing mode will return to the default mode where the robot body can be dragged to change its joint positions.
 
+- When the `Edit Target` is selected. The user pressing "Up" or "Down" arrow key shall move the value of the selected target up or down by a small step. The step size can be adjusted in the launch terminal.
+
+- No matter whether the `Edit Target` is selected. As long as the motion is loaded, the user pressing "Left" or "Right" arrow key shall move the value of the selected target left or right by a small step. The step size can be adjusted in the launch terminal.
+
+- When the user press "Space" key, the trajectory playback will be toggled between play and pause.
+
 ### Implementation Requirements
 
 - The robot state must be stored as a dedicated class, which contains the joint position sequence, base position sequence, and base orientation sequence. The class should provide methods for loading and saving the state to a `.npz` file, as well as methods for updating the state based on user input.

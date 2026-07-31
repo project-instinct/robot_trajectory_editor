@@ -12,7 +12,7 @@ import { Timeline } from './components/Timeline'
 import { PinnedBanner } from './components/PinnedBanner'
 import { TerrainEditor } from './components/TerrainEditor'
 import { useStore } from './state/store'
-import { getRobotUrdfUrl, getAssetUrl } from './api/client'
+import { getRobotUrdfUrl, getAssetUrl, getConfig } from './api/client'
 
 function App() {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -22,8 +22,18 @@ function App() {
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
   const {
     trajectory, trajectoryVersion, currentFrame, pinnedLink,
-    setRobotModelLoaded, setPinnedLink, setSegment,
+    setRobotModelLoaded, setPinnedLink, setSegment, setNudgeStep, setFrameStep,
   } = useStore()
+
+  // Pull launch-time config (e.g. arrow-key nudge/frame steps) from the backend.
+  useEffect(() => {
+    getConfig()
+      .then(cfg => {
+        if (typeof cfg.nudge_step === 'number') setNudgeStep(cfg.nudge_step)
+        if (typeof cfg.frame_step === 'number') setFrameStep(cfg.frame_step)
+      })
+      .catch(() => { /* keep the default steps when the backend has no config endpoint */ })
+  }, [setNudgeStep, setFrameStep])
 
   // Create the 3D viewport exactly once.
   useEffect(() => {
@@ -94,9 +104,29 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (useStore.getState().pinnedLink) setPinnedLink(null)
-      else setSegment(null, null)
+      if (e.key === 'Escape') {
+        if (useStore.getState().pinnedLink) setPinnedLink(null)
+        else setSegment(null, null)
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      // Let form controls keep their native key behavior (typing, slider arrows).
+      const target = e.target as HTMLElement | null
+      if (target && ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(target.tagName)) return
+      const s = useStore.getState()
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (!s.selectedChannel || s.trajectory.frameCount === 0) return
+        e.preventDefault()
+        s.nudgeSelectedChannel(e.key === 'ArrowUp' ? 1 : -1)
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (s.trajectory.frameCount === 0) return
+        e.preventDefault()
+        s.stepFrame(e.key === 'ArrowRight' ? 1 : -1)
+      } else if (e.key === ' ') {
+        if (s.trajectory.frameCount === 0) return
+        e.preventDefault()
+        s.setIsPlaying(!s.isPlaying)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)

@@ -68,10 +68,11 @@ Backend must handle the 0-d `framerate` (`float(arr)`) and always write float32.
 
 ## 5. Backend (Flask + numpy)
 
-CLI: `python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1]`
+CLI: `python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nudge-step 0.01] [--frame-step 1]`
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /api/config` | launch-time editor config (`nudge_step` from `--nudge-step`, default 0.01; `frame_step` from `--frame-step`, default 1) |
 | `GET /api/robot/info` | whether CLI provided a URDF (drives robot-selector visibility) |
 | `GET /api/robot/urdf` + `GET /api/robot/assets/<path>` | serve URDF + meshes; resolves relative & `package://` mesh paths against the URDF dir (verified pattern `../meshes/*.STL`) |
 | `POST /api/robot/upload` | no CLI URDF: upload folder (`.urdf` + meshes, `webkitdirectory`) → temp dir, served as above |
@@ -107,6 +108,7 @@ Single source of truth; dense storage in `Float32Array`s (1:1 with `.npz`); edit
 - **Left (target):** select edit target — joint by name, base position, or base orientation.
 - **Right (state):** per-joint sliders + numeric inputs (URDF limits), base pos xyz, base quat wxyz; edits write to current frame.
 - **Right (ops):** Fill (current state → segment or whole), Smooth (Gaussian low-pass on selected channel → segment or whole), Play/Pause (playback at `framerate`).
+- **Keyboard:** `Up`/`Down` nudge the selected edit target at the current frame by `nudgeStep`; `Left`/`Right` step the current frame by `frameStep` (clamped, no target needed); `Space` toggles play/pause. Steps come from backend `--nudge-step`/`--frame-step` via `/api/config`; arrows/space are ignored while a form control is focused.
 
 ## 9. Timeline (bottom)
 

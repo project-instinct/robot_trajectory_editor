@@ -14,6 +14,8 @@ app = Flask(__name__)
 ROBOT_URDF_PATH: str | None = None
 UPLOADED_ROBOT_DIR: str | None = None
 CURRENT_URDF_REL: str | None = None
+NUDGE_STEP: float = 0.01
+FRAME_STEP: int = 1
 
 
 def get_urdf_dir() -> str | None:
@@ -81,6 +83,14 @@ def resolve_mesh_path(mesh_href: str) -> str | None:
         return found[0]
 
     return None
+
+
+@app.route("/api/config")
+def editor_config():
+    return jsonify({
+        "nudge_step": NUDGE_STEP,
+        "frame_step": FRAME_STEP,
+    })
 
 
 @app.route("/api/robot/info")
@@ -238,15 +248,21 @@ def serve_api_catchall(rest: str):
 
 
 def main():
-    global ROBOT_URDF_PATH
+    global ROBOT_URDF_PATH, NUDGE_STEP, FRAME_STEP
     parser = argparse.ArgumentParser(description="Robot Trajectory Editor Backend")
     parser.add_argument("--robot-urdf", dest="robot_urdf_path", default=None, help="Path to robot URDF file")
     parser.add_argument("--port", type=int, default=5000, help="Flask server port")
     parser.add_argument("--host", default="127.0.0.1", help="Flask server host")
+    parser.add_argument("--nudge-step", type=float, default=0.01,
+                        help="Value step applied by the Up/Down arrow keys on the selected edit target")
+    parser.add_argument("--frame-step", type=int, default=1,
+                        help="Frame step applied by the Left/Right arrow keys")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
     ROBOT_URDF_PATH = args.robot_urdf_path
+    NUDGE_STEP = args.nudge_step
+    FRAME_STEP = args.frame_step
 
     if ROBOT_URDF_PATH and ROBOT_URDF_PATH.startswith("package://"):
         print(f"Warning: package:// URDF ({ROBOT_URDF_PATH}) - backend cannot resolve this. Use a local path.", file=sys.stderr)
