@@ -37,9 +37,15 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - A "Save Terrain" button allows users to save the current terrain mesh to a `.obj` file.
 
+    - A "Question Mark" button that opens a pop-up window with instructions on how to use the editor.
+
 - On the left, there is a panel for selecting critical robot state target, such as joint name (for joint position), base position, and base orientation.
 
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
+
+- Using "Shift" + mouse-drag to select a segment of the timeline. The selected segment will be highlighted in the timeline.
+
+    - If a timeline segment is selected, "Up" or "Down" arrow key will move the value of the selected target up or down by a small step for all frames in the selected segment.
 
 - On the right, there is a panel for displaying the current robot state, including joint positions, base position, and base orientation. Users can also manually input values to update the robot state.
 
