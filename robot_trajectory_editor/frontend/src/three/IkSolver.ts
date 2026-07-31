@@ -59,7 +59,7 @@ export class IkSolver {
     })
 
     this.solver = new Solver([this.ikRoot])
-    this.solver.maxIterations = 10
+    this.solver.maxIterations = 50
     this.solver.translationConvergeThreshold = 1e-3
     this.solver.rotationConvergeThreshold = 1e-4
     this.solver.updateStructure()
@@ -101,7 +101,7 @@ export class IkSolver {
 
   clearGoal(): void {
     if (this.goal) {
-      this.goal.removeChild(this.goal.child!)
+      try { this.goal.removeChild(this.goal.child!) } catch (_) { /* already detached */ }
       this.goal = null
       this.goalKey = ''
       this.solver.updateStructure()
@@ -123,7 +123,11 @@ export class IkSolver {
     const key = `${linkName}|${withRotation ? 'pose' : 'pos'}`
     if (this.goal && this.goalKey === key) return this.goal
 
-    if (this.goal) this.goal.removeChild(this.goal.child!)
+    if (this.goal) {
+      try { this.goal.removeChild(this.goal.child!) } catch (_) { /* already detached */ }
+      this.goal = null
+      this.goalKey = ''
+    }
     const link = this.ikLinks.get(linkName)
     if (!link) throw new Error(`IkSolver: unknown link "${linkName}"`)
 

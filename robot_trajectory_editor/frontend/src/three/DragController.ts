@@ -205,7 +205,7 @@ export class DragController {
 
       if (pinnedLink && this.ikSolver?.hasLink(pinnedLink)) {
         this.ikSolver.setConfiguration(newPos, newQuat, this.frameJointMap())
-        this.ikSolver.solvePositionGoal(pinnedLink, this.pinnedPos)
+        this.ikSolver.solvePoseGoal(pinnedLink, this.pinnedPos, this.pinnedQuat)
         this.writeSolvedJoints(this.ikSolver.getJointValues())
       }
     } else if (this.mode === 'link' && this.ikSolver) {
