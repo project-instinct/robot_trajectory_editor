@@ -104,7 +104,7 @@ Single source of truth; dense storage in `Float32Array`s (1:1 with `.npz`); edit
 
 ## 8. UI Panels
 
-- **Left (files):** Load Trajectory (picker→`/api/trajectory/parse`), Save Trajectory (serialize→Save-As), Load/Save Terrain (`.obj`), Edit Terrain (popup), robot selector (only when no CLI URDF → folder upload).
+- **Left (files):** Load Trajectory (picker→`/api/trajectory/parse`), Save Trajectory (serialize→Save-As), Load/Save Terrain (`.obj`), Edit Terrain (popup), `?` help popup, robot selector (only when no CLI URDF → folder upload).
 - **Left (target):** select edit target — joint by name, base position, or base orientation.
 - **Right (state):** per-joint sliders + numeric inputs (URDF limits), base pos xyz, base quat wxyz; edits write to current frame.
 - **Right (ops):** Fill (selected channel's current-frame value → segment or whole of that channel only), Smooth (Gaussian low-pass on selected channel → segment or whole), Play/Pause (playback at `framerate`).

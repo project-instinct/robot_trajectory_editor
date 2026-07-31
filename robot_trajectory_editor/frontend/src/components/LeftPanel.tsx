@@ -2,6 +2,7 @@ import { useStore } from '../state/store'
 import { Trajectory } from '../state/Trajectory'
 import { parseTrajectory, serializeTrajectory, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
 import { loadTerrain, exportTerrainObj } from '../three/Terrain'
+import { HelpModal } from './HelpModal'
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 
@@ -18,6 +19,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const [urdfList, setUrdfList] = useState<{ path: string; name: string }[]>([])
   const [selectedUrdf, setSelectedUrdf] = useState('')
   const [loadError, setLoadError] = useState('')
+  const [showHelp, setShowHelp] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const terrainInputRef = useRef<HTMLInputElement>(null)
   const robotFolderRef = useRef<HTMLInputElement>(null)
@@ -131,6 +133,8 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       <button onClick={handleLoadTerrain}>Load Terrain</button>
       <button onClick={handleSaveTerrain}>Save Terrain</button>
       <button onClick={onEditTerrain}>Edit Terrain</button>
+      <button onClick={() => setShowHelp(true)}>?</button>
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       {showRobotSelect && (
         <button onClick={handleLoadRobot}>Load Robot URDF</button>
       )}
