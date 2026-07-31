@@ -88,7 +88,7 @@ Single source of truth; dense storage in `Float32Array`s (1:1 with `.npz`); edit
 - IO: `fromJSON` / `toJSON` (↔ backend endpoints)
 - Frame ops: `getFrame(i)`, `setJointValue(frame, jointIdx, v)`, `setBasePose(frame, pos, quat)`
 - Keyframes: `insertKeyframe / removeKeyframe / moveKeyframe`
-- Range ops: `fillRange(start, end, state)`; `smoothRange(start, end, channel)` — component-wise cubic spline; quaternions: hemisphere-continuity fix → per-component spline → renormalize
+- Range ops: `fillRange(start, end, state)`; `smoothRange(start, end, channel, sigma?)` — Gaussian low-pass filter over the segment samples (removes high-frequency jitter, preserves motion shape; segment endpoints and keyframe anchors kept, smoothing strength tapered at the edges for continuity with the untouched frames); quaternions: hemisphere-continuity fix → per-component filter → renormalize
 - Channel type: `{kind:'joint', index} | {kind:'basePos'} | {kind:'baseQuat'}`
 - Unit tests (vitest): roundtrip, fill/smooth, quaternion continuity
 
@@ -106,7 +106,7 @@ Single source of truth; dense storage in `Float32Array`s (1:1 with `.npz`); edit
 - **Left (files):** Load Trajectory (picker→`/api/trajectory/parse`), Save Trajectory (serialize→Save-As), Load/Save Terrain (`.obj`), Edit Terrain (popup), robot selector (only when no CLI URDF → folder upload).
 - **Left (target):** select edit target — joint by name, base position, or base orientation.
 - **Right (state):** per-joint sliders + numeric inputs (URDF limits), base pos xyz, base quat wxyz; edits write to current frame.
-- **Right (ops):** Fill (current state → segment or whole), Smooth (cubic spline on selected channel → segment or whole), Play/Pause (playback at `framerate`).
+- **Right (ops):** Fill (current state → segment or whole), Smooth (Gaussian low-pass on selected channel → segment or whole), Play/Pause (playback at `framerate`).
 
 ## 9. Timeline (bottom)
 
@@ -134,7 +134,7 @@ Own Three.js viewport: **move/rotate** via TransformControls gizmos; **crop** vi
 ## 12. Testing
 
 - `backend/tests/test_npz_io.py`: synthetic arrays per §4 → serialize → parse → assert equality, dtypes, 0-d framerate.
-- `frontend`: vitest for `Trajectory` (fill/smooth/spline/quat, keyframe ops, JSON roundtrip).
+- `frontend`: vitest for `Trajectory` (fill/smooth/quat, keyframe ops, JSON roundtrip).
 - Manual E2E: launch with `--robot-urdf <local G1 path>`, synthetic + user-provided `.npz`.
 
 ## 13. Risks & Mitigations

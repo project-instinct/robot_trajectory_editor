@@ -84,21 +84,60 @@ describe('Trajectory', () => {
     expect(t.jointPos[5]).toBeCloseTo(1.57)
   })
 
-  it('should smooth without keyframes using segment endpoints', () => {
+  it('should remove high-frequency jitter but keep the low-frequency trend', () => {
+    const t = makeTrajectory(60, 1)
+    for (let f = 0; f < 60; f++) {
+      // linear trend + frame-to-frame (Nyquist) jitter
+      t.setJointValue(f, 0, f * 0.01 + (f % 2 === 0 ? 0.1 : -0.1))
+    }
+
+    const channel: ChannelKind = { kind: 'joint', index: 0 }
+    t.smoothRange(0, 59, channel)
+
+    // away from the tapered edges the jitter is gone and the trend is intact
+    for (let f = 8; f < 52; f++) {
+      expect(t.jointPos[f]).toBeCloseTo(f * 0.01, 2)
+    }
+  })
+
+  it('should preserve the segment shape instead of interpolating between endpoints', () => {
     const t = makeTrajectory(10, 1)
     t.setJointValue(0, 0, 0)
     t.setJointValue(9, 0, 1)
-    for (let f = 1; f < 9; f++) t.setJointValue(f, 0, 42) // noise in the middle
+    for (let f = 1; f < 9; f++) t.setJointValue(f, 0, 42) // constant interior offset
 
     const channel: ChannelKind = { kind: 'joint', index: 0 }
     t.smoothRange(0, 9, channel)
 
     expect(t.jointPos[0]).toBeCloseTo(0)
     expect(t.jointPos[9]).toBeCloseTo(1)
-    // interior replaced by spline between endpoints (no longer the noisy constant)
-    const mid = t.jointPos[4]
-    expect(mid).toBeGreaterThan(0)
-    expect(mid).toBeLessThan(1)
+    // interior stays near its original value (42) — the old buggy behavior
+    // replaced it with a start-to-end interpolation (~0.44 at frame 4)
+    expect(t.jointPos[4]).toBeGreaterThan(40)
+  })
+
+  it('should only smooth the selected segment and channel', () => {
+    const t = makeTrajectory(20, 2)
+    for (let f = 0; f < 20; f++) {
+      t.setJointValue(f, 0, f % 2 === 0 ? 1 : -1) // jitter on joint 0
+      t.setJointValue(f, 1, f * 0.05)             // reference data on joint 1
+    }
+    const joint0Before = Array.from({ length: 20 }, (_, f) => t.jointPos[f * 2])
+    const joint1Before = Array.from({ length: 20 }, (_, f) => t.jointPos[f * 2 + 1])
+
+    t.smoothRange(2, 17, { kind: 'joint', index: 0 })
+
+    // frames outside the segment and the segment endpoints are untouched
+    for (const f of [0, 1, 2, 17, 18, 19]) {
+      expect(t.jointPos[f * 2]).toBeCloseTo(joint0Before[f])
+    }
+    // fully-smoothed interior (past the edge taper): jitter essentially gone
+    expect(Math.abs(t.jointPos[9 * 2])).toBeLessThan(0.05)
+    expect(Math.abs(t.jointPos[10 * 2])).toBeLessThan(0.05)
+    // the other channel is untouched everywhere
+    for (let f = 0; f < 20; f++) {
+      expect(t.jointPos[f * 2 + 1]).toBeCloseTo(joint1Before[f])
+    }
   })
 
   it('should keep unit quaternions when smoothing base orientation', () => {

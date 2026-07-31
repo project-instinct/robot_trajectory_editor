@@ -25,7 +25,8 @@ export interface StoreState {
   setRobotModelLoaded: (l: boolean) => void
   /** Fill segment (or whole trajectory) with the current frame's full robot state. */
   fillRange: () => void
-  /** Cubic-spline smooth of the selected channel over the segment (or whole trajectory). */
+  /** Low-pass smooth of the selected channel over the segment (or whole trajectory):
+   *  removes high-frequency jitter, preserves the overall motion shape. */
   smoothRange: () => void
 }
 

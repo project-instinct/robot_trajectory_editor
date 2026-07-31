@@ -221,108 +221,128 @@ export class Trajectory {
   }
 
   /**
-   * Knots for cubic-spline smoothing: segment endpoints plus any keyframe
-   * anchors inside [start, end]. Endpoints are always preserved.
+   * Low-pass smoothing of one channel over [start, end]: a Gaussian-weighted
+   * moving average that removes high-frequency (frame-to-frame) jitter while
+   * preserving the overall shape of the motion. Only frames strictly inside
+   * the segment are modified: the endpoints and keyframe anchors are kept
+   * exactly, and the smoothing strength tapers to zero at the segment edges
+   * so the result stays continuous with the untouched frames outside.
+   *
+   * @param sigma Gaussian kernel width in frames; larger = stronger smoothing.
    */
-  private smoothKnots(start: number, end: number): number[] {
-    const knots = new Set<number>([start, end])
-    for (const f of this.keyframes) {
-      if (f > start && f < end) knots.add(f)
+  smoothRange(start: number, end: number, channel: ChannelKind, sigma: number = SMOOTH_SIGMA_FRAMES): void {
+    if (end <= start || !(sigma > 0)) return
+    if (channel.kind === 'baseQuat') {
+      this.smoothQuatChannel(start, end, sigma)
+      return
     }
-    return [...knots].sort((a, b) => a - b)
-  }
-
-  smoothRange(start: number, end: number, channel: ChannelKind): void {
-    if (end <= start) return
-    const knots = this.smoothKnots(start, end)
-    if (channel.kind === 'joint') {
-      const spline = cubicSpline(knots, knots.map(f => this.jointPos[f * this.jointCount + channel.index]))
-      for (let f = start; f <= end; f++) {
-        if (f === start || f === end || this.keyframes.has(f)) continue
-        this.jointPos[f * this.jointCount + channel.index] = spline(f)
-      }
-    } else if (channel.kind === 'basePos') {
-      const spline = cubicSpline(knots, knots.map(f => this.basePoseW[f * 3 + channel.axis]))
-      for (let f = start; f <= end; f++) {
-        if (f === start || f === end || this.keyframes.has(f)) continue
-        this.basePoseW[f * 3 + channel.axis] = spline(f)
-      }
-    } else {
-      this.smoothQuatChannel(start, end, knots)
+    const n = end - start + 1
+    const values = new Float64Array(n)
+    for (let f = start; f <= end; f++) {
+      values[f - start] = channel.kind === 'joint'
+        ? this.jointPos[f * this.jointCount + channel.index]
+        : this.basePoseW[f * 3 + channel.axis]
+    }
+    const kernel = gaussianKernel(sigma)
+    const smoothed = gaussianConvolve(values, kernel)
+    const radius = (kernel.length - 1) / 2
+    for (let f = start + 1; f < end; f++) {
+      if (this.keyframes.has(f)) continue
+      const i = f - start
+      const v = values[i] + smoothTaper(i, n, radius) * (smoothed[i] - values[i])
+      if (channel.kind === 'joint') this.jointPos[f * this.jointCount + channel.index] = v
+      else this.basePoseW[f * 3 + channel.axis] = v
     }
   }
 
   /**
    * Smooths the whole base-orientation sequence (any baseQuat channel smooths
    * the coupled quaternion, not a single euler axis, to avoid angle-wrap
-   * artifacts): hemisphere-fix knot quats, spline per component, renormalize.
+   * artifacts): hemisphere-fix the segment (chained from the frame before the
+   * segment when present, so the filter input is continuous with the
+   * untouched prefix), Gaussian-filter per component, renormalize.
    */
-  private smoothQuatChannel(start: number, end: number, knots: number[]): void {
-    const knotQuats: number[][] = []
-    let prev: number[] | null = null
-    for (const f of knots) {
-      const q = [
-        this.baseQuatW[f * 4], this.baseQuatW[f * 4 + 1],
-        this.baseQuatW[f * 4 + 2], this.baseQuatW[f * 4 + 3],
-      ]
-      if (prev) {
-        const dot = q[0] * prev[0] + q[1] * prev[1] + q[2] * prev[2] + q[3] * prev[3]
-        if (dot < 0) { q[0] = -q[0]; q[1] = -q[1]; q[2] = -q[2]; q[3] = -q[3] }
-      }
-      knotQuats.push(q)
+  private smoothQuatChannel(start: number, end: number, sigma: number): void {
+    const n = end - start + 1
+    const readQuat = (f: number): number[] => [
+      this.baseQuatW[f * 4], this.baseQuatW[f * 4 + 1],
+      this.baseQuatW[f * 4 + 2], this.baseQuatW[f * 4 + 3],
+    ]
+    const quats: number[][] = []
+    let prev = readQuat(start > 0 ? start - 1 : start)
+    for (let f = start; f <= end; f++) {
+      const q = readQuat(f)
+      const dot = q[0] * prev[0] + q[1] * prev[1] + q[2] * prev[2] + q[3] * prev[3]
+      if (dot < 0) { q[0] = -q[0]; q[1] = -q[1]; q[2] = -q[2]; q[3] = -q[3] }
+      quats.push(q)
       prev = q
     }
-    const splines = [0, 1, 2, 3].map(c => cubicSpline(knots, knotQuats.map(q => q[c])))
-    for (let f = start; f <= end; f++) {
-      if (f === start || f === end || this.keyframes.has(f)) continue
-      const w = splines[0](f), x = splines[1](f), y = splines[2](f), z = splines[3](f)
-      const n = Math.hypot(w, x, y, z) || 1
-      this.baseQuatW[f * 4] = w / n
-      this.baseQuatW[f * 4 + 1] = x / n
-      this.baseQuatW[f * 4 + 2] = y / n
-      this.baseQuatW[f * 4 + 3] = z / n
+    const kernel = gaussianKernel(sigma)
+    const smoothed = [0, 1, 2, 3].map(c => gaussianConvolve(quats.map(q => q[c]), kernel))
+    const radius = (kernel.length - 1) / 2
+    for (let f = start + 1; f < end; f++) {
+      if (this.keyframes.has(f)) continue
+      const i = f - start
+      const w = smoothTaper(i, n, radius)
+      const o = quats[i]
+      const qw = o[0] + w * (smoothed[0][i] - o[0])
+      const qx = o[1] + w * (smoothed[1][i] - o[1])
+      const qy = o[2] + w * (smoothed[2][i] - o[2])
+      const qz = o[3] + w * (smoothed[3][i] - o[3])
+      const norm = Math.hypot(qw, qx, qy, qz) || 1
+      this.baseQuatW[f * 4] = qw / norm
+      this.baseQuatW[f * 4 + 1] = qx / norm
+      this.baseQuatW[f * 4 + 2] = qy / norm
+      this.baseQuatW[f * 4 + 3] = qz / norm
     }
   }
 }
 
-function cubicSpline(xs: number[], ys: number[]): (x: number) => number {
-  const n = xs.length
-  const a = ys.slice()
-  const b = new Array(n).fill(0)
-  const d = new Array(n).fill(0)
-  const h: number[] = []
-  for (let i = 0; i < n - 1; i++) h.push(xs[i + 1] - xs[i])
+/** Default Gaussian kernel width (frames) for smoothRange: kills frame-to-frame
+ *  jitter while keeping motion slower than a few frames essentially intact. */
+const SMOOTH_SIGMA_FRAMES = 2
 
-  const alpha: number[] = [0]
-  for (let i = 1; i < n - 1; i++) {
-    alpha.push((3 / h[i]) * (a[i + 1] - a[i]) - (3 / h[i - 1]) * (a[i] - a[i - 1]))
+/** Normalized Gaussian kernel truncated at ±3σ. */
+function gaussianKernel(sigma: number): Float64Array {
+  const radius = Math.max(1, Math.ceil(3 * sigma))
+  const kernel = new Float64Array(2 * radius + 1)
+  let sum = 0
+  for (let i = -radius; i <= radius; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma))
+    kernel[i + radius] = v
+    sum += v
   }
-  alpha.push(0)
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum
+  return kernel
+}
 
-  const l: number[] = [1]
-  const mu: number[] = [0]
-  const z: number[] = [0]
-
-  for (let i = 1; i < n; i++) {
-    l.push(2 * (xs[i] - xs[i - 1]) - h[i - 1] * mu[i - 1])
-    mu.push(h[i - 1] / l[i])
-    z.push((alpha[i] - h[i - 1] * z[i - 1]) / l[i])
-  }
-
-  const c2: number[] = new Array(n).fill(0)
-  c2[n - 1] = 0
-  for (let j = n - 2; j >= 0; j--) {
-    c2[j] = z[j] - mu[j] * c2[j + 1]
-    b[j] = (a[j + 1] - a[j]) / h[j] - (h[j] * (c2[j + 1] + 2 * c2[j])) / 3
-    d[j] = (c2[j + 1] - c2[j]) / (3 * h[j])
-  }
-
-  return (x: number): number => {
-    let i = xs.length - 2
-    for (let k = 0; k < xs.length - 1; k++) {
-      if (x >= xs[k] && x <= xs[k + 1]) { i = k; break }
+/**
+ * Gaussian low-pass filter. Samples outside the array are dropped and the
+ * remaining weights renormalized, so edge frames stay near the edge values
+ * instead of being pulled toward zero.
+ */
+function gaussianConvolve(values: ArrayLike<number>, kernel: Float64Array): Float64Array {
+  const n = values.length
+  const radius = (kernel.length - 1) / 2
+  const out = new Float64Array(n)
+  for (let i = 0; i < n; i++) {
+    let acc = 0
+    let wsum = 0
+    const lo = Math.max(0, i - radius)
+    const hi = Math.min(n - 1, i + radius)
+    for (let j = lo; j <= hi; j++) {
+      const w = kernel[j - i + radius]
+      acc += w * values[j]
+      wsum += w
     }
-    const dx = x - xs[i]
-    return a[i] + b[i] * dx + c2[i] * dx * dx + d[i] * dx * dx * dx
+    out[i] = acc / wsum
   }
+  return out
+}
+
+/** Smoothing strength for segment frame i (of n): 0 at the edges, ramping
+ *  linearly to 1 one kernel-radius in, so the segment blends into the
+ *  untouched frames outside instead of creating a step. */
+function smoothTaper(i: number, n: number, radius: number): number {
+  return Math.min(1, i / radius, (n - 1 - i) / radius)
 }
