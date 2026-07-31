@@ -5,7 +5,7 @@ Web-based editor for robot trajectories. Create, edit, and visualize robot joint
 ## Quick Start
 
 ```bash
-# Launch both backend + frontend (backend conda env overridable via CONDA_ENV)
+# Launch both backend + frontend (prompts to install missing Python/npm dependencies)
 ./launch.sh [--robot-urdf /path/to/robot.urdf] [--port 5000] [--nudge-step 0.01] [--frame-step 1]
 ```
 

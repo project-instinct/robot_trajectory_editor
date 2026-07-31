@@ -20,8 +20,39 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/robot_trajectory_editor/backend"
 FRONTEND_DIR="$SCRIPT_DIR/robot_trajectory_editor/frontend"
 
-# Conda env for the backend; override with CONDA_ENV=<name> ./launch.sh
-CONDA_ENV="${CONDA_ENV:-omniretargeting}"
+# Locate a Python interpreter (python3 preferred, python as fallback).
+PYTHON="$(command -v python3 || command -v python || true)"
+if [ -z "$PYTHON" ]; then
+    echo "Error: Python 3 is not installed or not on PATH."
+    echo "Please install Python 3.9+ (https://www.python.org/) and re-run ./launch.sh"
+    exit 1
+fi
+
+# Check backend dependencies; prompt to install if missing.
+if ! "$PYTHON" -c "import flask, numpy" 2>/dev/null; then
+    echo "Warning: backend dependencies (flask, numpy) are missing from this Python environment."
+    echo "  Install them with:  pip install -r \"$BACKEND_DIR/requirements.txt\""
+    read -r -p "Run this install command now? [y/N] " ans
+    if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+        pip install -r "$BACKEND_DIR/requirements.txt"
+    else
+        echo "Aborting: backend dependencies required."
+        exit 1
+    fi
+fi
+
+# Check frontend dependencies; prompt to install if missing.
+if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
+    echo "Warning: frontend dependencies (node_modules) not found."
+    echo "  Install them with:  npm install"
+    read -r -p "Run this install command now? [y/N] " ans
+    if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
+        (cd "$FRONTEND_DIR" && npm install)
+    else
+        echo "Aborting: frontend dependencies required."
+        exit 1
+    fi
+fi
 
 cleanup() {
     echo ""
@@ -32,11 +63,9 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "=== Starting Backend (Flask :$PORT, env: $CONDA_ENV) ==="
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate "$CONDA_ENV" || echo "Warning: conda env '$CONDA_ENV' not found, using current python"
+echo "=== Starting Backend (Flask :$PORT) ==="
 cd "$BACKEND_DIR"
-python app.py $URDF_ARG $NUDGE_STEP_ARG $FRAME_STEP_ARG --port "$PORT" &
+"$PYTHON" app.py $URDF_ARG $NUDGE_STEP_ARG $FRAME_STEP_ARG --port "$PORT" &
 BACKEND_PID=$!
 
 echo "=== Starting Frontend (Vite :5173) ==="
