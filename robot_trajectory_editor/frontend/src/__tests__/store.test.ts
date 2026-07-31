@@ -151,6 +151,33 @@ describe('nudgeSelectedChannel', () => {
     expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(0.4)
   })
 
+  it('nudges every frame inside the selected timeline segment', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 1 })
+    s().setSegment(1, 3)
+    const before = [1, 2, 3].map(f => s().trajectory.getChannelValue(f, { kind: 'joint', index: 1 }))
+
+    s().nudgeSelectedChannel(1)
+    for (let f = 1; f <= 3; f++) {
+      expect(s().trajectory.getChannelValue(f, { kind: 'joint', index: 1 })).toBeCloseTo(before[f - 1] + 0.01)
+    }
+    // Frames outside the segment are untouched.
+    expect(s().trajectory.getChannelValue(0, { kind: 'joint', index: 1 })).toBeCloseTo(0.01)
+    expect(s().trajectory.getChannelValue(4, { kind: 'joint', index: 1 })).toBeCloseTo(0.41)
+  })
+
+  it('nudges the whole segment when it was dragged right-to-left', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 1 })
+    s().setSegment(3, 1)
+    const before = [1, 2, 3].map(f => s().trajectory.getChannelValue(f, { kind: 'joint', index: 1 }))
+
+    s().nudgeSelectedChannel(-1)
+    for (let f = 1; f <= 3; f++) {
+      expect(s().trajectory.getChannelValue(f, { kind: 'joint', index: 1 })).toBeCloseTo(before[f - 1] - 0.01)
+    }
+  })
+
   it('is a no-op without a selected channel or trajectory', () => {
     const s = () => useStore.getState()
     s().nudgeSelectedChannel(1)

@@ -65,10 +65,20 @@ export const useStore = create<StoreState>((set, get) => ({
   setNudgeStep: (step) => set({ nudgeStep: step }),
 
   nudgeSelectedChannel: (direction) => {
-    const { trajectory, selectedChannel, currentFrame, nudgeStep } = get()
+    const { trajectory, selectedChannel, currentFrame, nudgeStep, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
-    const value = trajectory.getChannelValue(currentFrame, selectedChannel) + direction * nudgeStep
-    trajectory.setChannelValue(currentFrame, selectedChannel, value)
+    const delta = direction * nudgeStep
+    if (segmentStart !== null && segmentEnd !== null) {
+      // Nudge every frame inside the selected timeline segment.
+      const start = Math.min(segmentStart, segmentEnd)
+      const end = Math.max(segmentStart, segmentEnd)
+      for (let f = start; f <= end; f++) {
+        trajectory.setChannelValue(f, selectedChannel, trajectory.getChannelValue(f, selectedChannel) + delta)
+      }
+    } else {
+      // No segment: nudge only the current frame.
+      trajectory.setChannelValue(currentFrame, selectedChannel, trajectory.getChannelValue(currentFrame, selectedChannel) + delta)
+    }
     get().touchTrajectory()
   },
 
