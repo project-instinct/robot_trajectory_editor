@@ -24,6 +24,28 @@ def get_urdf_dir() -> str | None:
     return None
 
 
+def _allowed_roots() -> list[str]:
+    """Directories asset requests are allowed to resolve into."""
+    if ROBOT_URDF_PATH and os.path.isfile(ROBOT_URDF_PATH):
+        urdf_dir = os.path.dirname(os.path.abspath(ROBOT_URDF_PATH))
+        # urdf_dir and its parent (robot package root, e.g. for ../meshes/x.STL)
+        return [urdf_dir, os.path.dirname(urdf_dir)]
+    if UPLOADED_ROBOT_DIR:
+        return [os.path.abspath(UPLOADED_ROBOT_DIR)]
+    return []
+
+
+def _is_within(path: str, roots: list[str]) -> bool:
+    ap = os.path.abspath(path)
+    for root in roots:
+        try:
+            if os.path.commonpath([ap, root]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def resolve_mesh_path(mesh_href: str) -> str | None:
     urdf_dir = get_urdf_dir()
     if not urdf_dir:
@@ -36,6 +58,7 @@ def resolve_mesh_path(mesh_href: str) -> str | None:
         else:
             mesh_href = parts[0]
 
+    roots = _allowed_roots()
     parent_dir = os.path.dirname(urdf_dir)
     urdf_file_dir = None
     if CURRENT_URDF_REL:
@@ -49,7 +72,7 @@ def resolve_mesh_path(mesh_href: str) -> str | None:
         candidates.append(os.path.normpath(os.path.join(urdf_file_dir, mesh_href)))
 
     for c in candidates:
-        if os.path.isfile(c):
+        if _is_within(c, roots) and os.path.isfile(c):
             return c
 
     filename = os.path.basename(mesh_href)

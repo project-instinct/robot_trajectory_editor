@@ -1,7 +1,7 @@
 import { useStore } from '../state/store'
 
 const basePosLabels = ['x', 'y', 'z']
-const baseQuatLabels = ['w', 'x', 'y', 'z']
+const baseQuatLabels = ['roll', 'pitch', 'yaw']
 
 export function TargetPanel() {
   const { trajectory, selectedChannel, setSelectedChannel } = useStore()

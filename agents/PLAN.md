@@ -61,7 +61,7 @@ robot-trajectory-editor/
 | `framerate` | `[]` (0-d) | float32 | trajectory framerate |
 | `joint_names` | `(joint_count,)` | str | ordered joint names |
 | `joint_pos` | `(frame_count, joint_count)` | float32 | joint position sequence |
-| `base_pose_w` | `(frame_count, 3)` | float32 | base position, world, xyz |
+| `base_pos_w` | `(frame_count, 3)` | float32 | base position, world, xyz |
 | `base_quat_w` | `(frame_count, 4)` | float32 | base orientation, world, **wxyz** |
 
 Backend must handle the 0-d `framerate` (`float(arr)`) and always write float32.
@@ -78,7 +78,7 @@ CLI: `python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1]
 | `POST /api/trajectory/parse` | `.npz` upload → JSON payload |
 | `POST /api/trajectory/serialize` | JSON payload → numpy → `.npz` download (browser Save-As) |
 
-Terrain `.obj` is client-side only (plain text; Three.js `OBJLoader`/`OBJExporter`).
+Terrain mesh files (`.obj` and `.stl`) are client-side only (Three.js `OBJLoader`/`STLLoader`; export always as `.obj`).
 
 ## 6. `Trajectory` Class (frontend, dedicated — task requirement)
 
@@ -95,7 +95,7 @@ Single source of truth; dense storage in `Float32Array`s (1:1 with `.npz`); edit
 ## 7. Main 3D Viewport
 
 - Three.js + OrbitControls; grid + flat z=0 ground plane when no terrain loaded.
-- Robot via `urdf-loader@0.13.1`; URDF root link (`pelvis` for G1) driven by `base_pose_w`/`base_quat_w` through a root group; joints set per current frame; updates on scrub/edit/playback.
+- Robot via `urdf-loader@0.13.1`; URDF root link (`pelvis` for G1) driven by `base_pos_w`/`base_quat_w` through a root group; joints set per current frame; updates on scrub/edit/playback.
 - **Drag interactions** (both modes use IK via `closed-chain-ik`, isolated behind `IkSolver` interface):
   - *Default mode:* drag any body link → link follows cursor (goal in camera-facing plane at grab depth); IK solves joints on the base→link chain. Dragging the base link moves the base pose. (Per TASK.md L62: default mode drags change joint positions.)
   - *Pinned mode (double-click a link):* link world pose frozen; mesh highlighted (emissive); `PinnedBanner` alert shown; dragging moves the **base** while IK re-solves the chain to keep the link fixed; double-click again / Esc unpins.

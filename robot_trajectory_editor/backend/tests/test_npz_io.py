@@ -74,3 +74,30 @@ def test_empty_trajectory():
     assert result["joint_pos"] == []
     assert result["base_pos_w"] == []
     assert result["base_quat_w"] == []
+
+
+def test_parse_spec_compliant_file():
+    """A .npz written exactly per TASK.md spec keys must parse."""
+    import io
+    buf = io.BytesIO()
+    np.savez(
+        buf,
+        framerate=np.array(30.0, dtype=np.float32),
+        joint_names=np.array(["j0", "j1"]),
+        joint_pos=np.zeros((4, 2), dtype=np.float32),
+        base_pos_w=np.zeros((4, 3), dtype=np.float32),
+        base_quat_w=np.tile(np.array([1, 0, 0, 0], dtype=np.float32), (4, 1)),
+    )
+    result = parse_npz(buf.getvalue())
+    assert result["framerate"] == 30.0
+    assert len(result["joint_pos"]) == 4
+    assert len(result["base_pos_w"][0]) == 3
+    assert len(result["base_quat_w"][0]) == 4
+
+
+def test_parse_missing_key_reports_spec_keys():
+    import io
+    buf = io.BytesIO()
+    np.savez(buf, framerate=np.array(30.0, dtype=np.float32))
+    with pytest.raises(ValueError, match="base_pos_w"):
+        parse_npz(buf.getvalue())

@@ -1,7 +1,7 @@
 import { useStore } from '../state/store'
 import { Trajectory } from '../state/Trajectory'
 import { parseTrajectory, serializeTrajectory, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
-import { loadTerrainObj, exportTerrainObj } from '../three/Terrain'
+import { loadTerrain, exportTerrainObj } from '../three/Terrain'
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 
@@ -75,8 +75,9 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const handleTerrainFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    const text = await file.text()
-    const group = await loadTerrainObj(text)
+    const isStl = file.name.toLowerCase().endsWith('.stl')
+    const data = isStl ? await file.arrayBuffer() : await file.text()
+    const group = await loadTerrain(data, file.name)
     onLoadTerrain(group)
     e.target.value = ''
   }
@@ -149,7 +150,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
         </div>
       )}
       <input ref={fileInputRef} type="file" accept=".npz" style={{ display: 'none' }} />
-      <input ref={terrainInputRef} type="file" accept=".obj" style={{ display: 'none' }} onChange={handleTerrainFileChange} />
+      <input ref={terrainInputRef} type="file" accept=".obj,.stl" style={{ display: 'none' }} onChange={handleTerrainFileChange} />
       <input ref={robotFolderRef} type="file" style={{ display: 'none' }} onChange={handleRobotFolderChange} />
     </div>
   )

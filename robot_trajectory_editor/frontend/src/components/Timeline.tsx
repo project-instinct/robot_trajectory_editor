@@ -1,52 +1,126 @@
 import { useStore } from '../state/store'
 import { useRef, useEffect, useCallback } from 'react'
 
-export function Timeline() {
-  const { trajectory, currentFrame, setCurrentFrame, selectedChannel, segmentStart, segmentEnd, setSegment } = useStore()
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const draggingRef = useRef(false)
+type DragState =
+  | { type: 'scrub' }
+  | { type: 'segment' }
+  | { type: 'keyframe'; startClientY: number; startValue: number; curFrame: number }
+  | null
 
-  const frameFromEvent = useCallback((e: MouseEvent | React.MouseEvent): number => {
+const KF_HIT_PX = 6
+
+/**
+ * Timeline interactions:
+ * - click / drag: scrub playhead
+ * - Shift+drag: select segment (used by Fill/Smooth)
+ * - double-click: add keyframe anchor at frame
+ * - drag keyframe horizontally: retime anchor; vertically: edit selected channel value
+ * - right-click keyframe: remove it
+ */
+export function Timeline() {
+  const {
+    trajectory, trajectoryVersion, currentFrame, setCurrentFrame,
+    selectedChannel, segmentStart, segmentEnd, setSegment, touchTrajectory,
+  } = useStore()
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const dragRef = useRef<DragState>(null)
+  // Value range of the currently drawn curve, for vertical keyframe dragging.
+  const scaleRef = useRef<{ vMin: number; vMax: number }>({ vMin: 0, vMax: 1 })
+
+  const frameFromX = useCallback((clientX: number): number => {
     const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return 0
+    if (!rect || trajectory.frameCount < 1) return 0
     return Math.max(0, Math.min(
-      Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1)),
-      trajectory.frameCount - 1
+      Math.round(((clientX - rect.left) / rect.width) * (trajectory.frameCount - 1)),
+      trajectory.frameCount - 1,
     ))
   }, [trajectory.frameCount])
 
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (trajectory.frameCount < 1) return
-    setCurrentFrame(frameFromEvent(e))
-  }, [trajectory.frameCount, setCurrentFrame, frameFromEvent])
+  const keyframeAtX = useCallback((clientX: number): number | null => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect || trajectory.frameCount < 2) return null
+    let best: number | null = null
+    let bestDist = KF_HIT_PX + 1
+    for (const f of trajectory.keyframes) {
+      const x = (f / (trajectory.frameCount - 1)) * rect.width
+      const d = Math.abs(clientX - rect.left - x)
+      if (d < bestDist) { bestDist = d; best = f }
+    }
+    return best
+  }, [trajectory])
 
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!e.shiftKey || trajectory.frameCount < 1) return
-    draggingRef.current = true
-    setSegment(frameFromEvent(e), null)
-  }, [trajectory.frameCount, setSegment, frameFromEvent])
+    if (trajectory.frameCount < 1) return
+    const kf = keyframeAtX(e.clientX)
+    if (kf !== null && !e.shiftKey) {
+      const startValue = selectedChannel ? trajectory.getChannelValue(kf, selectedChannel) : 0
+      dragRef.current = { type: 'keyframe', startClientY: e.clientY, startValue, curFrame: kf }
+      return
+    }
+    if (e.shiftKey) {
+      dragRef.current = { type: 'segment' }
+      setSegment(frameFromX(e.clientX), null)
+      return
+    }
+    dragRef.current = { type: 'scrub' }
+    setCurrentFrame(frameFromX(e.clientX))
+  }, [trajectory, selectedChannel, keyframeAtX, frameFromX, setCurrentFrame, setSegment])
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (trajectory.frameCount < 1) return
+    trajectory.insertKeyframe(frameFromX(e.clientX))
+    touchTrajectory()
+  }, [trajectory, frameFromX, touchTrajectory])
+
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const kf = keyframeAtX(e.clientX)
+    if (kf !== null) {
+      trajectory.removeKeyframe(kf)
+      touchTrajectory()
+    }
+  }, [keyframeAtX, trajectory, touchTrajectory])
 
   useEffect(() => {
     const handleWindowMouseMove = (e: MouseEvent) => {
-      if (!draggingRef.current) return
-      const rect = canvasRef.current?.getBoundingClientRect()
-      if (!rect) return
-      const frame = Math.max(0, Math.min(
-        Math.round(((e.clientX - rect.left) / rect.width) * (trajectory.frameCount - 1)),
-        trajectory.frameCount - 1
-      ))
+      const drag = dragRef.current
+      if (!drag) return
       const store = useStore.getState()
-      if (store.segmentStart !== null) {
-        store.setSegment(store.segmentStart, frame)
+
+      if (drag.type === 'scrub') {
+        store.setCurrentFrame(frameFromX(e.clientX))
+        return
+      }
+      if (drag.type === 'segment') {
+        if (store.segmentStart !== null) store.setSegment(store.segmentStart, frameFromX(e.clientX))
+        return
+      }
+      // keyframe drag: horizontal = retime anchor, vertical = edit channel value
+      const newFrame = frameFromX(e.clientX)
+      if (newFrame !== drag.curFrame) {
+        trajectory.removeKeyframe(drag.curFrame)
+        trajectory.insertKeyframe(newFrame)
+        drag.curFrame = newFrame
+        store.touchTrajectory()
+      }
+      const channel = store.selectedChannel
+      if (channel && trajectory.hasKeyframe(drag.curFrame)) {
+        const rect = canvasRef.current?.getBoundingClientRect()
+        if (rect && rect.height > 0) {
+          const { vMin, vMax } = scaleRef.current
+          const dv = ((drag.startClientY - e.clientY) / rect.height) * (vMax - vMin)
+          trajectory.setChannelValue(drag.curFrame, channel, drag.startValue + dv)
+          store.touchTrajectory()
+        }
       }
     }
 
     const handleWindowMouseUp = () => {
-      if (!draggingRef.current) return
-      draggingRef.current = false
-      const store = useStore.getState()
-      if (store.segmentStart !== null && store.segmentEnd === null) {
-        store.setSegment(null, null)
+      const drag = dragRef.current
+      dragRef.current = null
+      if (drag?.type === 'segment') {
+        const store = useStore.getState()
+        if (store.segmentStart !== null && store.segmentEnd === null) store.setSegment(null, null)
       }
     }
 
@@ -56,7 +130,7 @@ export function Timeline() {
       window.removeEventListener('mousemove', handleWindowMouseMove)
       window.removeEventListener('mouseup', handleWindowMouseUp)
     }
-  }, [trajectory.frameCount])
+  }, [trajectory, frameFromX])
 
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault()
@@ -81,7 +155,7 @@ export function Timeline() {
 
       ctx.strokeStyle = '#444'
       ctx.lineWidth = 1
-      const tickCount = Math.min(trajectory.frameCount, 50)
+      const tickCount = Math.min(Math.max(trajectory.frameCount, 1), 50)
       for (let i = 0; i <= tickCount; i++) {
         const x = (i / tickCount) * cw
         ctx.beginPath()
@@ -102,6 +176,7 @@ export function Timeline() {
         const margin = (vMax - vMin) * 0.1
         vMin -= margin
         vMax += margin
+        scaleRef.current = { vMin, vMax }
         const vRange = vMax - vMin
 
         ctx.strokeStyle = '#4af'
@@ -119,12 +194,14 @@ export function Timeline() {
       }
 
       trajectory.keyframes.forEach(f => {
+        if (trajectory.frameCount < 2) return
         const x = (f / (trajectory.frameCount - 1)) * cw
         ctx.fillStyle = '#fa4'
         ctx.beginPath()
-        ctx.moveTo(x, ch * 0.5)
-        ctx.lineTo(x - 4, ch * 0.5 - 8)
-        ctx.lineTo(x + 4, ch * 0.5 - 8)
+        ctx.moveTo(x, ch * 0.5 - 6)
+        ctx.lineTo(x - 5, ch * 0.5)
+        ctx.lineTo(x, ch * 0.5 + 6)
+        ctx.lineTo(x + 5, ch * 0.5)
         ctx.closePath()
         ctx.fill()
       })
@@ -137,7 +214,7 @@ export function Timeline() {
       ctx.lineTo(px, ch)
       ctx.stroke()
 
-      if (segmentStart !== null && segmentEnd !== null) {
+      if (segmentStart !== null && segmentEnd !== null && trajectory.frameCount > 1) {
         const sx = (Math.min(segmentStart, segmentEnd) / (trajectory.frameCount - 1)) * cw
         const ex = (Math.max(segmentStart, segmentEnd) / (trajectory.frameCount - 1)) * cw
         ctx.fillStyle = 'rgba(100, 100, 255, 0.2)'
@@ -148,15 +225,16 @@ export function Timeline() {
     draw()
     const interval = setInterval(draw, 100)
     return () => clearInterval(interval)
-  }, [trajectory, currentFrame, selectedChannel, segmentStart, segmentEnd])
+  }, [trajectory, trajectoryVersion, currentFrame, selectedChannel, segmentStart, segmentEnd])
 
   return (
     <canvas
       ref={canvasRef}
       style={canvasStyle}
-      onClick={handleCanvasClick}
-      onWheel={handleWheel}
       onMouseDown={handleMouseDown}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={handleContextMenu}
+      onWheel={handleWheel}
     />
   )
 }

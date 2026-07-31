@@ -1,5 +1,40 @@
 export type ChannelKind = { kind: 'joint'; index: number } | { kind: 'basePos'; axis: number } | { kind: 'baseQuat'; axis: number }
 
+function quatToEuler(w: number, x: number, y: number, z: number): [number, number, number] {
+  const sinr_cosp = 2 * (w * x + y * z)
+  const cosr_cosp = 1 - 2 * (x * x + y * y)
+  const roll = Math.atan2(sinr_cosp, cosr_cosp)
+
+  const sinp = 2 * (w * y - z * x)
+  let pitch: number
+  if (Math.abs(sinp) >= 1) {
+    pitch = Math.sign(sinp) * Math.PI / 2
+  } else {
+    pitch = Math.asin(sinp)
+  }
+
+  const siny_cosp = 2 * (w * z + x * y)
+  const cosy_cosp = 1 - 2 * (y * y + z * z)
+  const yaw = Math.atan2(siny_cosp, cosy_cosp)
+
+  return [roll, pitch, yaw]
+}
+
+function eulerToQuat(roll: number, pitch: number, yaw: number): [number, number, number, number] {
+  const cr = Math.cos(roll * 0.5)
+  const sr = Math.sin(roll * 0.5)
+  const cp = Math.cos(pitch * 0.5)
+  const sp = Math.sin(pitch * 0.5)
+  const cy = Math.cos(yaw * 0.5)
+  const sy = Math.sin(yaw * 0.5)
+
+  const w = cr * cp * cy + sr * sp * sy
+  const x = sr * cp * cy - cr * sp * sy
+  const y = cr * sp * cy + sr * cp * sy
+  const z = cr * cp * sy - sr * sp * cy
+  return [w, x, y, z]
+}
+
 export interface FrameState {
   jointPos: Float32Array
   basePoseW: Float32Array
@@ -34,7 +69,10 @@ export class Trajectory {
     this.framerate = framerate
     this.jointNames = jointNames
     this.jointCount = jointNames.length
-    this.frameCount = jointPos.length / Math.max(jointNames.length, 1)
+    // Derive frame count from base data when there are no joints (e.g. base-only trajectories)
+    this.frameCount = this.jointCount > 0
+      ? Math.floor(jointPos.length / this.jointCount)
+      : Math.floor(basePoseW.length / 3)
     this.jointPos = jointPos
     this.basePoseW = basePoseW
     this.baseQuatW = baseQuatW
@@ -115,7 +153,28 @@ export class Trajectory {
   getChannelValue(frame: number, channel: ChannelKind): number {
     if (channel.kind === 'joint') return this.jointPos[frame * this.jointCount + channel.index]
     if (channel.kind === 'basePos') return this.basePoseW[frame * 3 + channel.axis]
-    return this.baseQuatW[frame * 4 + channel.axis]
+    const w = this.baseQuatW[frame * 4]
+    const x = this.baseQuatW[frame * 4 + 1]
+    const y = this.baseQuatW[frame * 4 + 2]
+    const z = this.baseQuatW[frame * 4 + 3]
+    const [roll, pitch, yaw] = quatToEuler(w, x, y, z)
+    return channel.axis === 0 ? roll : channel.axis === 1 ? pitch : yaw
+  }
+
+  getQuatEuler(frame: number): [number, number, number] {
+    const w = this.baseQuatW[frame * 4]
+    const x = this.baseQuatW[frame * 4 + 1]
+    const y = this.baseQuatW[frame * 4 + 2]
+    const z = this.baseQuatW[frame * 4 + 3]
+    return quatToEuler(w, x, y, z)
+  }
+
+  setQuatEuler(frame: number, roll: number, pitch: number, yaw: number): void {
+    const [w, x, y, z] = eulerToQuat(roll, pitch, yaw)
+    this.baseQuatW[frame * 4] = w
+    this.baseQuatW[frame * 4 + 1] = x
+    this.baseQuatW[frame * 4 + 2] = y
+    this.baseQuatW[frame * 4 + 3] = z
   }
 
   getChannelValues(channel: ChannelKind): Float32Array {
@@ -131,7 +190,11 @@ export class Trajectory {
       return out
     }
     const out = new Float32Array(count)
-    for (let f = 0; f < count; f++) out[f] = this.baseQuatW[f * 4 + channel.axis]
+    for (let f = 0; f < count; f++) {
+      const [roll, pitch, yaw] = quatToEuler(
+        this.baseQuatW[f * 4], this.baseQuatW[f * 4 + 1], this.baseQuatW[f * 4 + 2], this.baseQuatW[f * 4 + 3])
+      out[f] = channel.axis === 0 ? roll : channel.axis === 1 ? pitch : yaw
+    }
     return out
   }
 
@@ -143,64 +206,81 @@ export class Trajectory {
     }
   }
 
-  fillChannel(start: number, end: number, channel: ChannelKind, value: number): void {
+  setChannelValue(frame: number, channel: ChannelKind, value: number): void {
     if (channel.kind === 'joint') {
-      for (let f = start; f <= end; f++) this.jointPos[f * this.jointCount + channel.index] = value
+      this.jointPos[frame * this.jointCount + channel.index] = value
     } else if (channel.kind === 'basePos') {
-      for (let f = start; f <= end; f++) this.basePoseW[f * 3 + channel.axis] = value
+      this.basePoseW[frame * 3 + channel.axis] = value
     } else {
-      for (let f = start; f <= end; f++) this.baseQuatW[f * 4 + channel.axis] = value
+      const [roll, pitch, yaw] = this.getQuatEuler(frame)
+      const r = channel.axis === 0 ? value : roll
+      const p = channel.axis === 1 ? value : pitch
+      const y = channel.axis === 2 ? value : yaw
+      this.setQuatEuler(frame, r, p, y)
     }
+  }
+
+  /**
+   * Knots for cubic-spline smoothing: segment endpoints plus any keyframe
+   * anchors inside [start, end]. Endpoints are always preserved.
+   */
+  private smoothKnots(start: number, end: number): number[] {
+    const knots = new Set<number>([start, end])
+    for (const f of this.keyframes) {
+      if (f > start && f < end) knots.add(f)
+    }
+    return [...knots].sort((a, b) => a - b)
   }
 
   smoothRange(start: number, end: number, channel: ChannelKind): void {
+    if (end <= start) return
+    const knots = this.smoothKnots(start, end)
     if (channel.kind === 'joint') {
-      this.smoothJointChannel(start, end, channel.index)
-    } else if (channel.kind === 'basePos') {
-      this.smoothBaseChannel(start, end, channel.axis, 'pos')
-    } else {
-      this.smoothBaseChannel(start, end, channel.axis, 'quat')
+      const spline = cubicSpline(knots, knots.map(f => this.jointPos[f * this.jointCount + channel.index]))
       for (let f = start; f <= end; f++) {
-        const x = this.baseQuatW[f * 4]
-        const y = this.baseQuatW[f * 4 + 1]
-        const z = this.baseQuatW[f * 4 + 2]
-        const w = this.baseQuatW[f * 4 + 3]
-        const mag = Math.sqrt(x * x + y * y + z * z + w * w)
-        if (mag > 0.001) {
-          this.baseQuatW[f * 4] = x / mag
-          this.baseQuatW[f * 4 + 1] = y / mag
-          this.baseQuatW[f * 4 + 2] = z / mag
-          this.baseQuatW[f * 4 + 3] = w / mag
-        }
+        if (f === start || f === end || this.keyframes.has(f)) continue
+        this.jointPos[f * this.jointCount + channel.index] = spline(f)
       }
+    } else if (channel.kind === 'basePos') {
+      const spline = cubicSpline(knots, knots.map(f => this.basePoseW[f * 3 + channel.axis]))
+      for (let f = start; f <= end; f++) {
+        if (f === start || f === end || this.keyframes.has(f)) continue
+        this.basePoseW[f * 3 + channel.axis] = spline(f)
+      }
+    } else {
+      this.smoothQuatChannel(start, end, knots)
     }
   }
 
-  private smoothJointChannel(start: number, end: number, jointIdx: number): void {
-    const values: number[] = []
-    const indices: number[] = []
-    for (let f = start; f <= end; f++) {
-      if (this.keyframes.has(f)) { values.push(this.jointPos[f * this.jointCount + jointIdx]); indices.push(f) }
+  /**
+   * Smooths the whole base-orientation sequence (any baseQuat channel smooths
+   * the coupled quaternion, not a single euler axis, to avoid angle-wrap
+   * artifacts): hemisphere-fix knot quats, spline per component, renormalize.
+   */
+  private smoothQuatChannel(start: number, end: number, knots: number[]): void {
+    const knotQuats: number[][] = []
+    let prev: number[] | null = null
+    for (const f of knots) {
+      const q = [
+        this.baseQuatW[f * 4], this.baseQuatW[f * 4 + 1],
+        this.baseQuatW[f * 4 + 2], this.baseQuatW[f * 4 + 3],
+      ]
+      if (prev) {
+        const dot = q[0] * prev[0] + q[1] * prev[1] + q[2] * prev[2] + q[3] * prev[3]
+        if (dot < 0) { q[0] = -q[0]; q[1] = -q[1]; q[2] = -q[2]; q[3] = -q[3] }
+      }
+      knotQuats.push(q)
+      prev = q
     }
-    if (indices.length < 2) return
-    const spline = cubicSpline(indices, values)
+    const splines = [0, 1, 2, 3].map(c => cubicSpline(knots, knotQuats.map(q => q[c])))
     for (let f = start; f <= end; f++) {
-      this.jointPos[f * this.jointCount + jointIdx] = spline(f)
-    }
-  }
-
-  private smoothBaseChannel(start: number, end: number, axis: number, kind: 'pos' | 'quat'): void {
-    const stride = kind === 'pos' ? 3 : 4
-    const arr = kind === 'pos' ? this.basePoseW : this.baseQuatW
-    const values: number[] = []
-    const indices: number[] = []
-    for (let f = start; f <= end; f++) {
-      if (this.keyframes.has(f)) { values.push(arr[f * stride + axis]); indices.push(f) }
-    }
-    if (indices.length < 2) return
-    const spline = cubicSpline(indices, values)
-    for (let f = start; f <= end; f++) {
-      arr[f * stride + axis] = spline(f)
+      if (f === start || f === end || this.keyframes.has(f)) continue
+      const w = splines[0](f), x = splines[1](f), y = splines[2](f), z = splines[3](f)
+      const n = Math.hypot(w, x, y, z) || 1
+      this.baseQuatW[f * 4] = w / n
+      this.baseQuatW[f * 4 + 1] = x / n
+      this.baseQuatW[f * 4 + 2] = y / n
+      this.baseQuatW[f * 4 + 3] = z / n
     }
   }
 }

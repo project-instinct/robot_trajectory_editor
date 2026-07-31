@@ -104,6 +104,7 @@ export class Viewport {
   }
 
   private _start(): void {
+    let errorLogged = false
     const loop = () => {
       if (!this._running) return
       requestAnimationFrame(loop)
@@ -111,8 +112,11 @@ export class Viewport {
         this.controls.update()
         this.dragController.update()
         this.renderer.render(this.scene, this.camera)
-      } catch (_e) {
-        // ignore render errors
+      } catch (e) {
+        if (!errorLogged) {
+          errorLogged = true
+          console.error('[Viewport] render loop error:', e)
+        }
       }
     }
     requestAnimationFrame(loop)
@@ -146,6 +150,7 @@ export class Viewport {
   }
 
   setRobotModel(model: RobotModel): void {
+    if (this.robotModel) this.scene.remove(this.robotModel.rootGroup)
     this.robotModel = model
     this.scene.add(model.rootGroup)
     this.dragController.setRobot(model)

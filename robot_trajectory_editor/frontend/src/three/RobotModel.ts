@@ -1,108 +1,166 @@
 import * as THREE from 'three'
 import { type URDFRobot } from 'urdf-loader'
-import type { IkSolver } from './IkSolver'
-import { CcdIkSolver } from './IkSolver'
+
+interface JointBinding {
+  urdfJoint: THREE.Object3D
+  name: string
+  index: number
+  lower: number
+  upper: number
+}
+
+interface UrdfLinkObject extends THREE.Object3D {
+  isURDFLink?: boolean
+}
+
+/** Finds the enclosing URDF link object for any descendant (mesh, visual, ...). */
+export function findLinkAncestor(obj: THREE.Object3D): THREE.Object3D | null {
+  let cur: THREE.Object3D | null = obj
+  while (cur) {
+    if ((cur as UrdfLinkObject).isURDFLink) return cur
+    cur = cur.parent
+  }
+  return null
+}
 
 export class RobotModel {
   urdfRobot: URDFRobot
   rootGroup: THREE.Group
-  jointMap: Map<string, { urdfJoint: THREE.Object3D; name: string; index: number }> = new Map()
+  rootLinkName: string
+  jointMap: Map<string, JointBinding> = new Map()
   linkMeshes: Map<string, THREE.Mesh[]> = new Map()
+  linkNodes: Map<string, THREE.Object3D> = new Map()
   pinnedLink: string | null = null
-  pinnedHighlight: THREE.MeshStandardMaterial[] = []
-  ikSolver: IkSolver = new CcdIkSolver()
+  private pinnedOriginals: [THREE.Mesh, THREE.Material | THREE.Material[]][] = []
+  private warnedInvalidFrame = false
 
   constructor(urdfRobot: URDFRobot, jointNames: string[]) {
     this.urdfRobot = urdfRobot
     this.rootGroup = new THREE.Group()
     this.rootGroup.add(urdfRobot)
 
-    jointNames.forEach((name, idx) => {
-      const joint = this.findJoint(urdfRobot, name)
-      if (joint) this.jointMap.set(name, { urdfJoint: joint, name, index: idx })
-    })
-
-    this.collectLinkMeshes(urdfRobot)
-  }
-
-  private findJoint(root: THREE.Object3D, name: string): THREE.Object3D | null {
-    if (root.name === name && root.type === 'URDFJoint') return root
-    for (const child of root.children) {
-      const found = this.findJoint(child, name)
-      if (found) return found
-    }
-    return null
-  }
-
-  private collectLinkMeshes(root: THREE.Object3D): void {
-    root.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) {
-        const mesh = obj as THREE.Mesh
-        const linkName = mesh.userData?.linkName || ''
-        if (!this.linkMeshes.has(linkName)) this.linkMeshes.set(linkName, [])
-        this.linkMeshes.get(linkName)!.push(mesh)
+    this.rootLinkName = ''
+    urdfRobot.traverse((obj) => {
+      const link = obj as UrdfLinkObject
+      if (link.isURDFLink) {
+        if (!this.rootLinkName) this.rootLinkName = link.name
+        if (link.name) this.linkNodes.set(link.name, obj)
       }
     })
+
+    this.refreshLinkMeshes()
+    this.bindJoints(jointNames)
   }
 
+  /** (Re)binds trajectory joint names to URDF joints (called on trajectory load). */
+  bindJoints(jointNames: string[]): void {
+    this.jointMap.clear()
+    const urdfJoints = (this.urdfRobot as unknown as { joints?: Record<string, THREE.Object3D> }).joints ?? {}
+    jointNames.forEach((name, idx) => {
+      const urdfJoint = urdfJoints[name]
+      if (!urdfJoint) return
+      const limit = (urdfJoint as unknown as { limit?: { lower: number; upper: number } }).limit
+      this.jointMap.set(name, {
+        urdfJoint,
+        name,
+        index: idx,
+        lower: limit?.lower ?? -Math.PI,
+        upper: limit?.upper ?? Math.PI,
+      })
+    })
+    if (jointNames.length > 0) {
+      const missing = jointNames.filter(n => !urdfJoints[n])
+      if (missing.length > 0) {
+        console.warn(
+          `[RobotModel] ${missing.length}/${jointNames.length} trajectory joints not found in URDF ` +
+          `(e.g. ${missing.slice(0, 5).join(', ')}). Those joints will not be posed.`,
+        )
+      }
+    }
+  }
+
+  getJointLimit(name: string): { lower: number; upper: number } | null {
+    const b = this.jointMap.get(name)
+    return b ? { lower: b.lower, upper: b.upper } : null
+  }
+
+  /**
+   * (Re)collects meshes per link. urdf-loader attaches visual meshes
+   * asynchronously AFTER its onLoad callback, so this must run lazily
+   * (on first use), not only in the constructor.
+   */
+  refreshLinkMeshes(): void {
+    this.linkMeshes.clear()
+    this.urdfRobot.traverse((obj) => {
+      if (!(obj as THREE.Mesh).isMesh) return
+      const mesh = obj as THREE.Mesh
+      const linkName = findLinkAncestor(mesh)?.name ?? ''
+      if (!this.linkMeshes.has(linkName)) this.linkMeshes.set(linkName, [])
+      this.linkMeshes.get(linkName)!.push(mesh)
+    })
+  }
+
+  /**
+   * Applies a trajectory frame: base pose (xyz + wxyz) and joint values by name index.
+   * Non-finite values are skipped (keeping the last valid pose) so a corrupted
+   * frame cannot push the whole model into NaN-space and vanish from the scene.
+   */
   applyFrame(jointValues: Float32Array, basePos: Float32Array, baseQuat: Float32Array): void {
-    this.rootGroup.position.set(basePos[0], basePos[1], basePos[2])
-    this.rootGroup.quaternion.set(baseQuat[1], baseQuat[2], baseQuat[3], baseQuat[0])
+    const baseOk = [basePos[0], basePos[1], basePos[2], baseQuat[0], baseQuat[1], baseQuat[2], baseQuat[3]]
+      .every(Number.isFinite)
+    if (baseOk) {
+      this.rootGroup.position.set(basePos[0], basePos[1], basePos[2])
+      const n = Math.hypot(baseQuat[0], baseQuat[1], baseQuat[2], baseQuat[3])
+      if (n > 1e-6) {
+        this.rootGroup.quaternion.set(baseQuat[1] / n, baseQuat[2] / n, baseQuat[3] / n, baseQuat[0] / n)
+      } else {
+        this.rootGroup.quaternion.identity()
+      }
+    } else if (!this.warnedInvalidFrame) {
+      this.warnedInvalidFrame = true
+      console.warn('[RobotModel] frame has non-finite base pose; keeping previous base pose')
+    }
 
     for (const [, info] of this.jointMap) {
       const val = jointValues[info.index]
-      if (val !== undefined) {
-        this.urdfRobot.setJointValue(info.name, val)
+      if (val !== undefined && Number.isFinite(val)) {
+        (this.urdfRobot as unknown as { setJointValue: (n: string, v: number) => void })
+          .setJointValue(info.name, val)
       }
     }
 
     this.rootGroup.updateMatrixWorld()
   }
 
+  getLinkWorldPose(linkName: string): { pos: THREE.Vector3; quat: THREE.Quaternion } | null {
+    const node = this.linkNodes.get(linkName)
+    if (!node) return null
+    const pos = new THREE.Vector3()
+    const quat = new THREE.Quaternion()
+    node.getWorldPosition(pos)
+    node.getWorldQuaternion(quat)
+    return { pos, quat }
+  }
+
+  /** Highlights the pinned link's meshes; restores original materials on unpin. */
   setPinned(linkName: string | null): void {
     if (this.pinnedLink === linkName) return
     this.pinnedLink = linkName
 
-    for (const material of this.pinnedHighlight) {
-      material.emissive?.set(0x000000)
-    }
-    this.pinnedHighlight = []
+    for (const [mesh, mat] of this.pinnedOriginals) mesh.material = mat
+    this.pinnedOriginals = []
 
-    if (linkName) {
-      const meshes = this.linkMeshes.get(linkName)
-      if (meshes) {
-        for (const mesh of meshes) {
-          const mat = mesh.material as THREE.MeshStandardMaterial
-          if (mat.emissive) {
-            const cloned = mat.clone()
-            cloned.emissive = new THREE.Color(0x444400)
-            mat.emissive = new THREE.Color(0x444400)
-            this.pinnedHighlight.push(cloned)
-          }
-          mesh.material = mesh.material
-        }
-      }
-    } else {
-      this.pinnedHighlight = []
+    if (!linkName) return
+    // Meshes attach asynchronously after load; make sure the map is current.
+    this.refreshLinkMeshes()
+    const meshes = this.linkMeshes.get(linkName)
+    if (!meshes) return
+    for (const mesh of meshes) {
+      this.pinnedOriginals.push([mesh, mesh.material])
+      const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+      const highlight = (src as THREE.MeshStandardMaterial).clone()
+      if (highlight.emissive) highlight.emissive.set(0x664400)
+      mesh.material = highlight
     }
   }
-
-  getJointValues(): number[] {
-    const vals: number[] = []
-    for (const [_, info] of this.jointMap) {
-      const euler = new THREE.Euler().setFromQuaternion(info.urdfJoint.quaternion, 'XYZ')
-      vals.push(euler.z)
-    }
-    return vals
-  }
-
-  solveIkForPinned(_linkName: string, targetWorld: THREE.Matrix4): number[] {
-    return this.ikSolver.solve(
-      { jointNames: [], jointTypes: [], jointOrigins: [], endEffectorOffset: new THREE.Matrix4() },
-      targetWorld,
-      this.getJointValues(),
-    )
-  }
-
-  physicsUpdate(_dt: number): void {}
 }

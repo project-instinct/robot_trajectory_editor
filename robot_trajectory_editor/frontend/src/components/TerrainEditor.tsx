@@ -2,19 +2,65 @@ import { useState, useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { cropTerrain, downsampleTerrain, bakeTerrainTransform } from '../three/Terrain'
 
 interface TerrainEditorProps {
   terrain: THREE.Group | null
+  /** Called with the edited terrain on Apply, or null on Cancel. */
   onClose: (modified: THREE.Group | null) => void
 }
 
-export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
-  const [isOpen, setIsOpen] = useState(true)
-  const [terrainRef] = useState<{ current: THREE.Group | null }>(() => ({ current: terrain ? terrain.clone() : null }))
+function cloneTerrainDeep(terrain: THREE.Group): THREE.Group {
+  const clone = terrain.clone(true)
+  clone.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) {
+      const mesh = obj as THREE.Mesh
+      mesh.geometry = mesh.geometry.clone()
+    }
+  })
+  return clone
+}
 
-  if (!isOpen) {
-    return null
+export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
+  // Editable copy created once per editor open; gizmo edits apply directly to it.
+  const [editable] = useState<THREE.Group | null>(() => (terrain ? cloneTerrainDeep(terrain) : null))
+  const [bbox] = useState<THREE.Box3>(() => {
+    const box = new THREE.Box3()
+    if (editable) box.setFromObject(editable)
+    return box
+  })
+  const [cropMin, setCropMin] = useState<[number, number, number]>([bbox.min.x, bbox.min.y, bbox.min.z])
+  const [cropMax, setCropMax] = useState<[number, number, number]>([bbox.max.x, bbox.max.y, bbox.max.z])
+  const [ratio, setRatio] = useState(0.5)
+
+  const handleCrop = () => {
+    if (!editable) return
+    cropTerrain(editable, new THREE.Box3(
+      new THREE.Vector3(...cropMin),
+      new THREE.Vector3(...cropMax),
+    ))
   }
+
+  const handleDownsample = () => {
+    if (!editable) return
+    downsampleTerrain(editable, ratio)
+  }
+
+  const handleApply = () => {
+    // Bake gizmo move/rotate into geometry so the exported/committed mesh is self-contained.
+    if (editable) bakeTerrainTransform(editable)
+    onClose(editable)
+  }
+
+  const numInput = (value: number, onChange: (v: number) => void) => (
+    <input
+      type="number"
+      step={0.1}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+      style={{ width: '70px', fontSize: '11px' }}
+    />
+  )
 
   return (
     <div style={overlayStyle}>
@@ -22,13 +68,42 @@ export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
           <h3 style={{ margin: 0 }}>Terrain Editor</h3>
           <div style={{ display: 'flex', gap: '6px' }}>
-            <button onClick={() => { setIsOpen(false); onClose(terrainRef.current) }}>Apply</button>
-            <button onClick={() => { setIsOpen(false); onClose(terrain) }}>Cancel</button>
+            <button onClick={handleApply}>Apply</button>
+            <button onClick={() => onClose(null)}>Cancel</button>
           </div>
         </div>
-        <TerrainViewport terrain={terrainRef.current} />
-        <div style={{ padding: '8px 0', display: 'flex', gap: '8px', fontSize: '12px', color: '#888' }}>
-          Use gizmo to move/rotate terrain. Right-click to orbit.
+        <TerrainViewport terrain={editable} />
+        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', padding: '8px 0', fontSize: '12px', color: '#aaa' }}>
+          <div>
+            <div>Crop min (x y z):</div>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {cropMin.map((v, i) => (
+                <span key={i}>{numInput(v, (nv) => setCropMin(prev => { const n = [...prev] as typeof prev; n[i] = nv; return n }))}</span>
+              ))}
+            </div>
+            <div>Crop max (x y z):</div>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {cropMax.map((v, i) => (
+                <span key={i}>{numInput(v, (nv) => setCropMax(prev => { const n = [...prev] as typeof prev; n[i] = nv; return n }))}</span>
+              ))}
+            </div>
+            <button style={{ marginTop: '4px' }} onClick={handleCrop}>Crop</button>
+          </div>
+          <div>
+            <div>Downsample ratio ({Math.round(ratio * 100)}% removed):</div>
+            <input
+              type="range"
+              min={0.05}
+              max={0.9}
+              step={0.05}
+              value={ratio}
+              onChange={(e) => setRatio(parseFloat(e.target.value))}
+            />
+            <button onClick={handleDownsample}>Downsample</button>
+          </div>
+          <div style={{ color: '#888' }}>
+            Drag gizmo to move/rotate terrain (T = translate, R = rotate). Right-drag to orbit.
+          </div>
         </div>
       </div>
     </div>
@@ -63,26 +138,32 @@ function TerrainViewport({ terrain }: { terrain: THREE.Group | null }) {
     dir.position.set(5, 5, 10)
     scene.add(dir)
 
+    // Z-up grid (GridHelper is XZ by default; rotate into XY plane).
     const grid = new THREE.GridHelper(10, 10, 0x444466, 0x222244)
+    grid.rotation.x = Math.PI / 2
     scene.add(grid)
 
-    let controlsTarget: THREE.Group | null = null
     let transformControls: TransformControls | null = null
-
     if (terrain) {
-      controlsTarget = terrain.clone()
-      scene.add(controlsTarget)
-
+      scene.add(terrain)
       transformControls = new TransformControls(camera, renderer.domElement)
-      transformControls.attach(controlsTarget)
+      transformControls.attach(terrain)
       scene.add(transformControls as unknown as THREE.Object3D)
-
       transformControls.addEventListener('dragging-changed', (event) => {
         orbitControls.enabled = !(event.target as TransformControls).dragging
       })
     }
 
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!transformControls) return
+      if (e.key === 't' || e.key === 'T') transformControls.setMode('translate')
+      if (e.key === 'r' || e.key === 'R') transformControls.setMode('rotate')
+    }
+    window.addEventListener('keydown', onKeyDown)
+
+    let running = true
     function animate() {
+      if (!running) return
       requestAnimationFrame(animate)
       orbitControls.update()
       renderer.render(scene, camera)
@@ -97,9 +178,11 @@ function TerrainViewport({ terrain }: { terrain: THREE.Group | null }) {
     window.addEventListener('resize', onResize)
 
     return () => {
+      running = false
       window.removeEventListener('resize', onResize)
+      window.removeEventListener('keydown', onKeyDown)
       orbitControls.dispose()
-      if (transformControls) { transformControls.dispose() }
+      transformControls?.dispose()
       renderer.dispose()
       el.removeChild(renderer.domElement)
     }

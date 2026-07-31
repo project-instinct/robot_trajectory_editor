@@ -3,6 +3,8 @@ import { Trajectory, type ChannelKind } from './Trajectory'
 
 export interface StoreState {
   trajectory: Trajectory
+  /** Bumped on every in-place trajectory mutation so subscribers re-render. */
+  trajectoryVersion: number
   currentFrame: number
   selectedChannel: ChannelKind | null
   segmentStart: number | null
@@ -11,19 +13,25 @@ export interface StoreState {
   pinnedLink: string | null
   robotModelLoaded: boolean
 
+  /** Load a new trajectory (resets playback position). */
   setTrajectory: (t: Trajectory) => void
+  /** Notify that the current trajectory was mutated in place. */
+  touchTrajectory: () => void
   setCurrentFrame: (f: number) => void
   setSelectedChannel: (c: ChannelKind | null) => void
   setSegment: (start: number | null, end: number | null) => void
   setIsPlaying: (p: boolean) => void
   setPinnedLink: (name: string | null) => void
   setRobotModelLoaded: (l: boolean) => void
+  /** Fill segment (or whole trajectory) with the current frame's full robot state. */
   fillRange: () => void
+  /** Cubic-spline smooth of the selected channel over the segment (or whole trajectory). */
   smoothRange: () => void
 }
 
 export const useStore = create<StoreState>((set, get) => ({
   trajectory: Trajectory.empty(),
+  trajectoryVersion: 0,
   currentFrame: 0,
   selectedChannel: null,
   segmentStart: null,
@@ -33,6 +41,7 @@ export const useStore = create<StoreState>((set, get) => ({
   robotModelLoaded: false,
 
   setTrajectory: (t) => set({ trajectory: t, currentFrame: 0 }),
+  touchTrajectory: () => set(s => ({ trajectoryVersion: s.trajectoryVersion + 1 })),
   setCurrentFrame: (f) => set({ currentFrame: f }),
   setSelectedChannel: (c) => set({ selectedChannel: c }),
   setSegment: (start, end) => set({ segmentStart: start, segmentEnd: end }),
@@ -41,21 +50,21 @@ export const useStore = create<StoreState>((set, get) => ({
   setRobotModelLoaded: (l) => set({ robotModelLoaded: l }),
 
   fillRange: () => {
-    const { trajectory, currentFrame, selectedChannel, segmentStart, segmentEnd } = get()
-    if (!selectedChannel) return
+    const { trajectory, currentFrame, segmentStart, segmentEnd } = get()
+    if (trajectory.frameCount === 0) return
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
-    const value = trajectory.getChannelValue(currentFrame, selectedChannel)
-    trajectory.fillChannel(start, end, selectedChannel, value)
-    set({ trajectory: trajectory })
+    const state = trajectory.getFrame(currentFrame)
+    trajectory.fillRange(start, end, state)
+    get().touchTrajectory()
   },
 
   smoothRange: () => {
     const { trajectory, selectedChannel, segmentStart, segmentEnd } = get()
-    if (!selectedChannel) return
+    if (!selectedChannel || trajectory.frameCount === 0) return
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
     trajectory.smoothRange(start, end, selectedChannel)
-    set({ trajectory: trajectory })
+    get().touchTrajectory()
   },
 }))

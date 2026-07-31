@@ -16,6 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/robot_trajectory_editor/backend"
 FRONTEND_DIR="$SCRIPT_DIR/robot_trajectory_editor/frontend"
 
+# Conda env for the backend; override with CONDA_ENV=<name> ./launch.sh
+CONDA_ENV="${CONDA_ENV:-omniretargeting}"
+
 cleanup() {
     echo ""
     echo "Shutting down..."
@@ -25,9 +28,9 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-echo "=== Starting Backend (Flask :$PORT) ==="
+echo "=== Starting Backend (Flask :$PORT, env: $CONDA_ENV) ==="
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate omniretargeting
+conda activate "$CONDA_ENV" || echo "Warning: conda env '$CONDA_ENV' not found, using current python"
 cd "$BACKEND_DIR"
 python app.py $URDF_ARG --port "$PORT" &
 BACKEND_PID=$!

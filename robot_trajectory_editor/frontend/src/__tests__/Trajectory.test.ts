@@ -60,19 +60,6 @@ describe('Trajectory', () => {
     expect(frame.basePoseW[2]).toBeCloseTo(3)
   })
 
-  it('should fill range', () => {
-    const t = makeTrajectory(5, 2)
-    t.setJointValue(0, 0, 9.99)
-    const sourceState = t.getFrame(0)
-    t.fillRange(1, 3, sourceState)
-
-    for (let f = 1; f <= 3; f++) {
-      const frame = t.getFrame(f)
-      expect(frame.jointPos[0]).toBeCloseTo(9.99)
-      expect(frame.basePoseW[0]).toBeCloseTo(0)
-    }
-  })
-
   it('should smooth range with keyframes', () => {
     const t = makeTrajectory(10, 1)
     t.insertKeyframe(0)
@@ -93,6 +80,74 @@ describe('Trajectory', () => {
 
     expect(t.jointPos[0]).toBeCloseTo(0)
     expect(t.jointPos[9]).toBeCloseTo(0)
+    // keyframe anchor preserved
+    expect(t.jointPos[5]).toBeCloseTo(1.57)
+  })
+
+  it('should smooth without keyframes using segment endpoints', () => {
+    const t = makeTrajectory(10, 1)
+    t.setJointValue(0, 0, 0)
+    t.setJointValue(9, 0, 1)
+    for (let f = 1; f < 9; f++) t.setJointValue(f, 0, 42) // noise in the middle
+
+    const channel: ChannelKind = { kind: 'joint', index: 0 }
+    t.smoothRange(0, 9, channel)
+
+    expect(t.jointPos[0]).toBeCloseTo(0)
+    expect(t.jointPos[9]).toBeCloseTo(1)
+    // interior replaced by spline between endpoints (no longer the noisy constant)
+    const mid = t.jointPos[4]
+    expect(mid).toBeGreaterThan(0)
+    expect(mid).toBeLessThan(1)
+  })
+
+  it('should keep unit quaternions when smoothing base orientation', () => {
+    const t = makeTrajectory(10, 1)
+    for (let f = 0; f < 10; f++) {
+      // alternate hemispheres to test continuity handling
+      const s = f % 2 === 0 ? 1 : -1
+      t.setBasePose(f, new Float32Array([0, 0, 1]), new Float32Array([s, 0, 0, 0]))
+    }
+    const channel: ChannelKind = { kind: 'baseQuat', axis: 2 }
+    t.smoothRange(0, 9, channel)
+    for (let f = 0; f < 10; f++) {
+      const q = t.getFrame(f).baseQuatW
+      const n = Math.hypot(q[0], q[1], q[2], q[3])
+      expect(n).toBeCloseTo(1, 3)
+    }
+  })
+
+  it('should derive frame count from base data when there are no joints', () => {
+    const t = new Trajectory(
+      30,
+      [],
+      new Float32Array(0),
+      new Float32Array([0, 0, 1, 1, 0, 1]),
+      new Float32Array([1, 0, 0, 0, 1, 0, 0, 0]),
+    )
+    expect(t.frameCount).toBe(2)
+    expect(t.jointCount).toBe(0)
+  })
+
+  it('should set a single channel value', () => {
+    const t = makeTrajectory(5, 2)
+    t.setChannelValue(2, { kind: 'joint', index: 1 }, 0.75)
+    expect(t.jointPos[2 * 2 + 1]).toBeCloseTo(0.75)
+    t.setChannelValue(2, { kind: 'basePos', axis: 2 }, 1.5)
+    expect(t.basePoseW[2 * 3 + 2]).toBeCloseTo(1.5)
+  })
+
+  it('should fill range with full robot state', () => {
+    const t = makeTrajectory(5, 2)
+    t.setJointValue(0, 0, 9.99)
+    const sourceState = t.getFrame(0)
+    t.fillRange(1, 3, sourceState)
+
+    for (let f = 1; f <= 3; f++) {
+      const frame = t.getFrame(f)
+      expect(frame.jointPos[0]).toBeCloseTo(9.99)
+      expect(frame.basePoseW[0]).toBeCloseTo(0)
+    }
   })
 
   it('should preserve keyframes', () => {
