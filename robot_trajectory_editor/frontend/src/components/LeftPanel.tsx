@@ -1,6 +1,6 @@
 import { useStore } from '../state/store'
 import { Trajectory } from '../state/Trajectory'
-import { parseTrajectory, serializeTrajectory, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
+import { parseTrajectory, saveTrajectoryFile, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
 import { loadTerrain, exportTerrainObj } from '../three/Terrain'
 import { HelpModal } from './HelpModal'
 import { useEffect, useRef, useState } from 'react'
@@ -56,15 +56,8 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   }
 
   const handleSaveTrajectory = async () => {
-    const json = trajectory.toJSON()
     try {
-      const blob = await serializeTrajectory(json)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'trajectory.npz'
-      a.click()
-      URL.revokeObjectURL(url)
+      await saveTrajectoryFile(trajectory.toJSON())
     } catch (e) {
       console.error('Failed to save trajectory:', e)
     }

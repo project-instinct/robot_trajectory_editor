@@ -54,3 +54,51 @@ export async function serializeTrajectory(payload: TrajectoryJSON): Promise<Blob
   if (!res.ok) throw new Error('Failed to serialize trajectory')
   return res.blob()
 }
+
+interface SaveFileHandle {
+  createWritable: () => Promise<{
+    write: (data: Blob) => Promise<void>
+    close: () => Promise<void>
+  }>
+}
+
+interface SaveFilePickerWindow extends Window {
+  showSaveFilePicker?: (options: {
+    suggestedName: string
+    types: { description: string; accept: Record<string, string[]> }[]
+  }) => Promise<SaveFileHandle>
+}
+
+/** Serialize and save a trajectory through the native picker when supported. */
+export async function saveTrajectoryFile(payload: TrajectoryJSON): Promise<void> {
+  const pickerWindow = window as SaveFilePickerWindow
+  if (pickerWindow.showSaveFilePicker) {
+    try {
+      // Open the picker before awaiting serialization so the browser still
+      // considers this part of the user's click or keyboard gesture.
+      const handle = await pickerWindow.showSaveFilePicker({
+        suggestedName: 'trajectory.npz',
+        types: [{
+          description: 'NumPy trajectory',
+          accept: { 'application/octet-stream': ['.npz'] },
+        }],
+      })
+      const blob = await serializeTrajectory(payload)
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      throw error
+    }
+    return
+  }
+
+  const blob = await serializeTrajectory(payload)
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = 'trajectory.npz'
+  anchor.click()
+  URL.revokeObjectURL(url)
+}

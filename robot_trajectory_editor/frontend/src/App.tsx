@@ -12,7 +12,7 @@ import { Timeline } from './components/Timeline'
 import { PinnedBanner } from './components/PinnedBanner'
 import { TerrainEditor } from './components/TerrainEditor'
 import { useStore } from './state/store'
-import { getRobotUrdfUrl, getAssetUrl, getConfig } from './api/client'
+import { getRobotUrdfUrl, getAssetUrl, getConfig, saveTrajectoryFile } from './api/client'
 
 function App() {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -109,6 +109,14 @@ function App() {
         else setSegment(null, null)
         return
       }
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyS' || e.key.toLowerCase() === 's')) {
+        e.preventDefault()
+        if (!e.repeat) {
+          void saveTrajectoryFile(useStore.getState().trajectory.toJSON())
+            .catch(error => console.error('Failed to save trajectory:', error))
+        }
+        return
+      }
       // Let form controls keep their native key behavior (typing, slider arrows).
       const target = e.target as HTMLElement | null
       const editingText = target && (
@@ -164,13 +172,13 @@ function App() {
             onRobotUploaded={setUrdfRelPath}
           />
           <TargetPanel />
+          <OpsPanel />
         </div>
         <div style={viewportWrapperStyle}>
           <PinnedBanner />
           <div ref={viewportRef} style={viewportStyle} />
         </div>
         <div style={rightPanelStyle}>
-          <OpsPanel />
           <StatePanel />
         </div>
       </div>

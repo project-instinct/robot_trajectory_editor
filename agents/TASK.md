@@ -41,6 +41,14 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - On the left, there is a panel for selecting critical robot state target, such as joint name (for joint position), base position, and base orientation.
 
+- On the left, there is a block below the "Edit Target" block for special operation buttons, such as "Fill", "Smooth", "Play", "Pause".
+
+    - "Fill": Automatically fills the selected `Edit Target` channel with its value at the current frame when clicked. If a segment of the timeline is selected, only that segment of the channel will be filled. If no segment is selected, the entire channel will be filled. All other channels are left unchanged.
+
+    - "Smooth": Removes high-frequency jitter from the selected state trajectory (low-pass filtering) when clicked, while preserving the overall shape of the motion. If a segment of the tlimeline is selected, only that segment will be smoothed. If no segment is selected, the entire trajectory will be smoothed.
+
+    - "Interpolate": Interpolate the selected segment of the trajectory using linear interpolation from the start frame to the end frame. If no segment is selected, no interpolation will be performed.
+
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
 
 - Using "Shift" + mouse-drag to select a segment of the timeline. The selected segment will be highlighted in the timeline.
@@ -48,14 +56,6 @@ This is the source code of a web-based robot trajectory editor. It allows users 
     - If a timeline segment is selected, "Up" or "Down" arrow key will move the value of the selected target up or down by a small step for all frames in the selected segment.
 
 - On the right, there is a panel for displaying the current robot state, including joint positions, base position, and base orientation. Users can also manually input values to update the robot state.
-
-- On the right, there is a panel for special operation buttons, such as "Fill", "Smooth", "Play", "Pause".
-
-    - "Fill": Automatically fills the selected `Edit Target` channel with its value at the current frame when clicked. If a segment of the timeline is selected, only that segment of the channel will be filled. If no segment is selected, the entire channel will be filled. All other channels are left unchanged.
-
-    - "Smooth": Removes high-frequency jitter from the selected state trajectory (low-pass filtering) when clicked, while preserving the overall shape of the motion. If a segment of the tlimeline is selected, only that segment will be smoothed. If no segment is selected, the entire trajectory will be smoothed.
-
-    - "Interpolate": Interpolate the selected segment of the trajectory using linear interpolation from the start frame to the end frame. If no segment is selected, no interpolation will be performed.
 
 - In the main 3D window, where the user can click and drag the robot to change its current position and orientation.
 
@@ -76,6 +76,12 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 - No matter whether the `Edit Target` is selected. As long as the motion is loaded, the user pressing "Left" or "Right" arrow key shall move the value of the selected target left or right by a small step. The step size can be adjusted in the launch terminal.
 
 - When the user press "Space" key, the trajectory playback will be toggled between play and pause.
+
+- When the user press "Ctrl + Z" key, the last operation will be undone.
+
+    - When the user keep pressing "Ctrl + Z" key, the previous operations will be undone one by one continusly.
+
+- When the user press "Ctrl + S" key, pop up the windows to save the trajectory file.
 
 ### Implementation Requirements
 

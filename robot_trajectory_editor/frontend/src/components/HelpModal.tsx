@@ -13,7 +13,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
         <div style={bodyStyle}>
           <Section title="Files">
             <Item>Load Trajectory: open a <code>.npz</code> trajectory file.</Item>
-            <Item>Save Trajectory: download the current trajectory as <code>.npz</code>.</Item>
+            <Item>Save Trajectory: open a file-location dialog and save the current trajectory as <code>.npz</code>. You can also press Ctrl+S / Cmd+S.</Item>
             <Item>Load Terrain / Save Terrain: load (<code>.obj</code>/<code>.stl</code>) or export the terrain mesh.</Item>
             <Item>Edit Terrain: open a pop-up to crop, down-sample, move, and rotate the terrain.</Item>
             <Item>Load Robot URDF: upload a robot package when no URDF is provided at launch.</Item>
@@ -23,7 +23,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
           </Section>
           <Section title="Timeline (bottom)">
             <Item>Click or drag on the timeline to scrub the playhead.</Item>
-            <Item>Shift + drag to select a segment; it is highlighted and targeted by Fill / Smooth / arrow nudges.</Item>
+            <Item>Shift + drag to select a segment; it is highlighted and targeted by Fill / Smooth / Interpolate / arrow nudges.</Item>
             <Item>Double-click to add a keyframe anchor; drag it horizontally to retime, vertically to change the value of the selected target.</Item>
             <Item>Right-click a keyframe to remove it.</Item>
             <Item>Mouse wheel steps the playhead.</Item>
@@ -33,6 +33,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Left / Right: move the playhead by the frame step (no target selection needed).</Item>
             <Item>Space: toggle play / pause.</Item>
             <Item>Ctrl+Z / Cmd+Z: undo the last trajectory edit.</Item>
+            <Item>Ctrl+S / Cmd+S: open the dialog to save the trajectory as <code>.npz</code>.</Item>
             <Item>Esc: unfix all pinned links, or clear the selected segment.</Item>
           </Section>
           <Section title="3D Viewport">
@@ -40,7 +41,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Drag the robot base to translate it; Shift + drag the base to rotate (yaw).</Item>
             <Item>Double-click links to fix their positions and orientations in the world frame. Pinned meshes are highlighted; double-click one again to unfix it, or press Esc to unfix all.</Item>
           </Section>
-          <Section title="Operations (right panel)">
+          <Section title="Operations (left panel)">
             <Item>Fill: fill the selected channel with its current-frame value over the selected segment (or the whole trajectory).</Item>
             <Item>Smooth: low-pass filter the selected channel over the selected segment (or the whole trajectory).</Item>
             <Item>Interpolate: linearly interpolate the selected channel between the selected segment endpoints.</Item>
