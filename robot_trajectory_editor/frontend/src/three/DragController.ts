@@ -105,6 +105,8 @@ export class DragController {
     const hit = this.raycastRobot(event)
     if (!hit) return
 
+    useStore.getState().beginTrajectoryEdit()
+
     // A drag starts here: keep OrbitControls out of this gesture.
     event.stopPropagation()
     this.viewport.controls.enabled = false

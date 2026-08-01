@@ -48,6 +48,17 @@ def _is_within(path: str, roots: list[str]) -> bool:
     return False
 
 
+def _safe_upload_relative_path(filename: str) -> str:
+    """Return a normalized relative upload path or raise for path traversal."""
+    # Browsers normally submit POSIX paths, but normalize Windows separators too.
+    normalized = os.path.normpath(filename.replace("\\", "/"))
+    if normalized in ("", ".") or os.path.isabs(normalized):
+        raise ValueError("Uploaded filenames must be relative paths")
+    if normalized == ".." or normalized.startswith(f"..{os.sep}"):
+        raise ValueError("Uploaded filenames may not escape the upload directory")
+    return normalized
+
+
 def resolve_mesh_path(mesh_href: str) -> str | None:
     urdf_dir = get_urdf_dir()
     if not urdf_dir:
@@ -138,7 +149,7 @@ def serve_urdf():
         if not urdf_dir:
             return abort(404, "No robot directory set")
         urdf_path = os.path.normpath(os.path.join(urdf_dir, urdf_rel))
-        if not os.path.isfile(urdf_path):
+        if not _is_within(urdf_path, [os.path.abspath(urdf_dir)]) or not os.path.isfile(urdf_path):
             return abort(404, f"URDF file not found: {urdf_rel}")
         CURRENT_URDF_REL = urdf_rel
     else:
@@ -191,13 +202,21 @@ def upload_robot():
         return jsonify({"error": "No files uploaded"}), 400
 
     temp_dir = tempfile.mkdtemp(prefix="robot_urdf_")
-    for f in uploaded_files:
-        rel_path = f.filename
-        if not rel_path:
-            continue
-        dest = os.path.join(temp_dir, rel_path)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        f.save(dest)
+    try:
+        saved_count = 0
+        for f in uploaded_files:
+            if not f.filename:
+                continue
+            rel_path = _safe_upload_relative_path(f.filename)
+            dest = os.path.join(temp_dir, rel_path)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            f.save(dest)
+            saved_count += 1
+        if saved_count == 0:
+            raise ValueError("No named files uploaded")
+    except ValueError as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return jsonify({"error": str(e)}), 400
 
     if UPLOADED_ROBOT_DIR and os.path.isdir(UPLOADED_ROBOT_DIR):
         shutil.rmtree(UPLOADED_ROBOT_DIR, ignore_errors=True)

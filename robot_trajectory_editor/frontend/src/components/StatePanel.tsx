@@ -3,7 +3,7 @@ import { useCallback } from 'react'
 import { getViewport } from '../three/viewportContext'
 
 export function StatePanel() {
-  const { trajectory, currentFrame, touchTrajectory, robotModelLoaded } = useStore()
+  const { trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, robotModelLoaded } = useStore()
   const frame = trajectory.getFrame(currentFrame)
   // Reading limits imperatively; robotModelLoaded subscription triggers re-render on robot load.
   void robotModelLoaded
@@ -11,27 +11,30 @@ export function StatePanel() {
 
   const handleJointChange = useCallback((index: number, value: number) => {
     if (isNaN(value)) return
+    beginTrajectoryEdit()
     trajectory.setJointValue(currentFrame, index, value)
     touchTrajectory()
-  }, [trajectory, currentFrame, touchTrajectory])
+  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory])
 
   const handleBasePosChange = useCallback((axis: number, value: number) => {
     if (isNaN(value)) return
+    beginTrajectoryEdit()
     const newPos = new Float32Array(frame.basePoseW)
     newPos[axis] = value
     trajectory.setBasePose(currentFrame, newPos, frame.baseQuatW)
     touchTrajectory()
-  }, [trajectory, currentFrame, touchTrajectory, frame])
+  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, frame])
 
   const handleBaseQuatChange = useCallback((axis: number, value: number) => {
     if (isNaN(value)) return
+    beginTrajectoryEdit()
     const [roll, pitch, yaw] = trajectory.getQuatEuler(currentFrame)
     const r = axis === 0 ? value : roll
     const p = axis === 1 ? value : pitch
     const ya = axis === 2 ? value : yaw
     trajectory.setQuatEuler(currentFrame, r, p, ya)
     touchTrajectory()
-  }, [trajectory, currentFrame, touchTrajectory])
+  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory])
 
   return (
     <div style={panelStyle}>

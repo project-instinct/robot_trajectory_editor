@@ -22,7 +22,7 @@ function App() {
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
   const {
     trajectory, trajectoryVersion, currentFrame, pinnedLink,
-    setRobotModelLoaded, setPinnedLink, setSegment, setNudgeStep, setFrameStep,
+    setRobotModelLoaded, setPinnedLink, setSegment, setNudgeStep, setFrameStep, undo,
   } = useStore()
 
   // Pull launch-time config (e.g. arrow-key nudge/frame steps) from the backend.
@@ -109,10 +109,18 @@ function App() {
         else setSegment(null, null)
         return
       }
-      if (e.ctrlKey || e.metaKey || e.altKey) return
       // Let form controls keep their native key behavior (typing, slider arrows).
       const target = e.target as HTMLElement | null
-      if (target && ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(target.tagName)) return
+      const editingText = target && (
+        ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable
+      )
+      if (editingText) return
+      if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.key.toLowerCase() === 'z')) {
+        e.preventDefault()
+        useStore.getState().undo()
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return
       const s = useStore.getState()
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         if (!s.selectedChannel || s.trajectory.frameCount === 0) return
@@ -128,9 +136,9 @@ function App() {
         s.setIsPlaying(!s.isPlaying)
       }
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setPinnedLink, setSegment])
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [setPinnedLink, setSegment, undo])
 
   const handleLoadTerrain = useCallback((group: THREE.Group) => {
     setTerrain(group)

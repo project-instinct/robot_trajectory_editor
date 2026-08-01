@@ -1,6 +1,4 @@
 import io
-import json
-import os
 from typing import Any
 
 import numpy as np
@@ -9,7 +7,10 @@ import numpy as np
 def parse_npz(data: bytes) -> dict[str, Any]:
     buf = io.BytesIO(data)
     try:
-        npz = np.load(buf, allow_pickle=True)
+        # The trajectory format contains only numeric arrays and string names.
+        # Disabling pickle prevents crafted uploads from executing code while
+        # NumPy materializes object arrays.
+        npz = np.load(buf, allow_pickle=False)
     except Exception as e:
         raise ValueError(f"Not a valid .npz file: {e}")
 

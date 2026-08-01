@@ -5,6 +5,8 @@ export interface StoreState {
   trajectory: Trajectory
   /** Bumped on every in-place trajectory mutation so subscribers re-render. */
   trajectoryVersion: number
+  /** Snapshots captured immediately before user edits. */
+  undoStack: Trajectory[]
   currentFrame: number
   selectedChannel: ChannelKind | null
   segmentStart: number | null
@@ -19,8 +21,11 @@ export interface StoreState {
 
   /** Load a new trajectory (resets playback position). */
   setTrajectory: (t: Trajectory) => void
+  /** Capture the current trajectory before an in-place user edit. */
+  beginTrajectoryEdit: () => void
   /** Notify that the current trajectory was mutated in place. */
   touchTrajectory: () => void
+  undo: () => void
   setCurrentFrame: (f: number) => void
   setSelectedChannel: (c: ChannelKind | null) => void
   setSegment: (start: number | null, end: number | null) => void
@@ -44,6 +49,7 @@ export interface StoreState {
 export const useStore = create<StoreState>((set, get) => ({
   trajectory: Trajectory.empty(),
   trajectoryVersion: 0,
+  undoStack: [],
   currentFrame: 0,
   selectedChannel: null,
   segmentStart: null,
@@ -54,8 +60,25 @@ export const useStore = create<StoreState>((set, get) => ({
   nudgeStep: 0.01,
   frameStep: 1,
 
-  setTrajectory: (t) => set({ trajectory: t, currentFrame: 0 }),
+  setTrajectory: (t) => set({ trajectory: t, currentFrame: 0, undoStack: [] }),
+  beginTrajectoryEdit: () => set(s => ({
+    undoStack: [...s.undoStack, s.trajectory.clone()].slice(-100),
+  })),
   touchTrajectory: () => set(s => ({ trajectoryVersion: s.trajectoryVersion + 1 })),
+  undo: () => {
+    const { undoStack, currentFrame } = get()
+    const previous = undoStack[undoStack.length - 1]
+    if (!previous) return
+    const nextFrame = previous.frameCount === 0
+      ? 0
+      : Math.min(currentFrame, previous.frameCount - 1)
+    set(s => ({
+      trajectory: previous,
+      undoStack: s.undoStack.slice(0, -1),
+      currentFrame: nextFrame,
+      trajectoryVersion: s.trajectoryVersion + 1,
+    }))
+  },
   setCurrentFrame: (f) => set({ currentFrame: f }),
   setSelectedChannel: (c) => set({ selectedChannel: c }),
   setSegment: (start, end) => set({ segmentStart: start, segmentEnd: end }),
@@ -67,6 +90,7 @@ export const useStore = create<StoreState>((set, get) => ({
   nudgeSelectedChannel: (direction) => {
     const { trajectory, selectedChannel, currentFrame, nudgeStep, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
+    get().beginTrajectoryEdit()
     const delta = direction * nudgeStep
     if (segmentStart !== null && segmentEnd !== null) {
       // Nudge every frame inside the selected timeline segment.
@@ -94,6 +118,7 @@ export const useStore = create<StoreState>((set, get) => ({
   fillRange: () => {
     const { trajectory, selectedChannel, currentFrame, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
+    get().beginTrajectoryEdit()
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
     const value = trajectory.getChannelValue(currentFrame, selectedChannel)
@@ -104,6 +129,7 @@ export const useStore = create<StoreState>((set, get) => ({
   smoothRange: () => {
     const { trajectory, selectedChannel, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
+    get().beginTrajectoryEdit()
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
     trajectory.smoothRange(start, end, selectedChannel)

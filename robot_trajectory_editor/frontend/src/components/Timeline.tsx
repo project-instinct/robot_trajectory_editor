@@ -20,7 +20,7 @@ const KF_HIT_PX = 6
 export function Timeline() {
   const {
     trajectory, trajectoryVersion, currentFrame, setCurrentFrame,
-    selectedChannel, segmentStart, segmentEnd, setSegment, touchTrajectory,
+    selectedChannel, segmentStart, segmentEnd, setSegment, beginTrajectoryEdit, touchTrajectory,
   } = useStore()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragRef = useRef<DragState>(null)
@@ -53,6 +53,7 @@ export function Timeline() {
     if (trajectory.frameCount < 1) return
     const kf = keyframeAtX(e.clientX)
     if (kf !== null && !e.shiftKey) {
+      beginTrajectoryEdit()
       const startValue = selectedChannel ? trajectory.getChannelValue(kf, selectedChannel) : 0
       dragRef.current = { type: 'keyframe', startClientY: e.clientY, startValue, curFrame: kf }
       return
@@ -64,22 +65,24 @@ export function Timeline() {
     }
     dragRef.current = { type: 'scrub' }
     setCurrentFrame(frameFromX(e.clientX))
-  }, [trajectory, selectedChannel, keyframeAtX, frameFromX, setCurrentFrame, setSegment])
+  }, [trajectory, selectedChannel, keyframeAtX, frameFromX, setCurrentFrame, setSegment, beginTrajectoryEdit])
 
   const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (trajectory.frameCount < 1) return
+    beginTrajectoryEdit()
     trajectory.insertKeyframe(frameFromX(e.clientX))
     touchTrajectory()
-  }, [trajectory, frameFromX, touchTrajectory])
+  }, [trajectory, frameFromX, beginTrajectoryEdit, touchTrajectory])
 
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     e.preventDefault()
     const kf = keyframeAtX(e.clientX)
     if (kf !== null) {
+      beginTrajectoryEdit()
       trajectory.removeKeyframe(kf)
       touchTrajectory()
     }
-  }, [keyframeAtX, trajectory, touchTrajectory])
+  }, [keyframeAtX, trajectory, beginTrajectoryEdit, touchTrajectory])
 
   useEffect(() => {
     const handleWindowMouseMove = (e: MouseEvent) => {

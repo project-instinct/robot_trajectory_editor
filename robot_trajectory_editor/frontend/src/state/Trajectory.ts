@@ -101,6 +101,18 @@ export class Trajectory {
     )
   }
 
+  clone(): Trajectory {
+    const copy = new Trajectory(
+      this.framerate,
+      [...this.jointNames],
+      new Float32Array(this.jointPos),
+      new Float32Array(this.basePoseW),
+      new Float32Array(this.baseQuatW),
+    )
+    copy.keyframes = new Set(this.keyframes)
+    return copy
+  }
+
   toJSON(): TrajectoryJSON {
     const jc = this.jointCount
     const joint_pos: number[][] = []

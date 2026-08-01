@@ -101,3 +101,19 @@ def test_parse_missing_key_reports_spec_keys():
     np.savez(buf, framerate=np.array(30.0, dtype=np.float32))
     with pytest.raises(ValueError, match="base_pos_w"):
         parse_npz(buf.getvalue())
+
+
+def test_parse_rejects_pickle_object_arrays():
+    import io
+
+    buf = io.BytesIO()
+    np.savez(
+        buf,
+        framerate=np.array(30.0, dtype=np.float32),
+        joint_names=np.array(["j0"], dtype=object),
+        joint_pos=np.zeros((1, 1), dtype=np.float32),
+        base_pos_w=np.zeros((1, 3), dtype=np.float32),
+        base_quat_w=np.array([[1, 0, 0, 0]], dtype=np.float32),
+    )
+    with pytest.raises(ValueError, match="allow_pickle"):
+        parse_npz(buf.getvalue())

@@ -19,6 +19,7 @@ beforeEach(() => {
   useStore.setState({
     trajectory: makeTrajectory(),
     trajectoryVersion: 0,
+    undoStack: [],
     currentFrame: 3,
     selectedChannel: null,
     segmentStart: null,
@@ -69,6 +70,36 @@ describe('fillRange', () => {
     s().fillRange()
     expect(s().trajectoryVersion).toBe(0)
     expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+  })
+})
+
+describe('undo', () => {
+  it('reverts the latest trajectory edit, including keyframes', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 0 })
+    const before = s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })
+
+    s().beginTrajectoryEdit()
+    s().trajectory.setChannelValue(3, { kind: 'joint', index: 0 }, 9)
+    s().trajectory.insertKeyframe(3)
+    s().touchTrajectory()
+    s().undo()
+
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(before)
+    expect(s().trajectory.hasKeyframe(3)).toBe(false)
+  })
+
+  it('can undo multiple edits in reverse order', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 0 })
+    const original = s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })
+
+    s().nudgeSelectedChannel(1)
+    s().nudgeSelectedChannel(1)
+    s().undo()
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(original + 0.01)
+    s().undo()
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(original)
   })
 })
 

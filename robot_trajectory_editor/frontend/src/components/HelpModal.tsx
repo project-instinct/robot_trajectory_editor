@@ -32,6 +32,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Up / Down: nudge the selected target by the step size. If a timeline segment is selected, every frame in the segment is nudged; otherwise only the current frame.</Item>
             <Item>Left / Right: move the playhead by the frame step (no target selection needed).</Item>
             <Item>Space: toggle play / pause.</Item>
+            <Item>Ctrl+Z / Cmd+Z: undo the last trajectory edit.</Item>
             <Item>Esc: unfix a pinned link, or clear the selected segment.</Item>
           </Section>
           <Section title="3D Viewport">
