@@ -216,6 +216,20 @@ export class Trajectory {
     for (let f = start; f <= end; f++) this.setChannelValue(f, channel, value)
   }
 
+  /** Linearly interpolate one channel between the selected endpoints. */
+  interpolateChannelRange(start: number, end: number, channel: ChannelKind): void {
+    const first = Math.min(start, end)
+    const last = Math.max(start, end)
+    if (last <= first) return
+    const firstValue = this.getChannelValue(first, channel)
+    const lastValue = this.getChannelValue(last, channel)
+    const span = last - first
+    for (let frame = first + 1; frame < last; frame++) {
+      const alpha = (frame - first) / span
+      this.setChannelValue(frame, channel, firstValue + alpha * (lastValue - firstValue))
+    }
+  }
+
   setChannelValue(frame: number, channel: ChannelKind, value: number): void {
     if (channel.kind === 'joint') {
       this.jointPos[frame * this.jointCount + channel.index] = value

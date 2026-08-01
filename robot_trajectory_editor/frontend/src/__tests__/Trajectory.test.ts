@@ -207,6 +207,31 @@ describe('Trajectory', () => {
     }
   })
 
+  it('should linearly interpolate only the selected channel between endpoints', () => {
+    const t = makeTrajectory(5, 2)
+    t.setJointValue(0, 0, 1)
+    t.setJointValue(4, 0, 3)
+    for (let frame = 1; frame < 4; frame++) t.setJointValue(frame, 0, 99)
+
+    t.interpolateChannelRange(0, 4, { kind: 'joint', index: 0 })
+
+    expect(Array.from(t.getChannelValues({ kind: 'joint', index: 0 }))).toEqual([1, 1.5, 2, 2.5, 3])
+    for (let frame = 0; frame < 5; frame++) {
+      expect(t.getChannelValue(frame, { kind: 'joint', index: 1 })).toBeCloseTo(frame * 0.1 + 0.01)
+    }
+  })
+
+  it('should interpolate a range selected from right to left', () => {
+    const t = makeTrajectory(5, 1)
+    t.setChannelValue(1, { kind: 'basePos', axis: 2 }, 1)
+    t.setChannelValue(3, { kind: 'basePos', axis: 2 }, 3)
+    t.setChannelValue(2, { kind: 'basePos', axis: 2 }, 99)
+
+    t.interpolateChannelRange(3, 1, { kind: 'basePos', axis: 2 })
+
+    expect(t.getChannelValue(2, { kind: 'basePos', axis: 2 })).toBeCloseTo(2)
+  })
+
   it('should preserve keyframes', () => {
     const t = makeTrajectory(5, 1)
     t.insertKeyframe(2)

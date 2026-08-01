@@ -1,11 +1,12 @@
 import { useStore } from '../state/store'
 
 export function PinnedBanner() {
-  const pinnedLink = useStore(s => s.pinnedLink)
-  if (!pinnedLink) return null
+  const pinnedLinks = useStore(s => s.pinnedLinks)
+  if (pinnedLinks.length === 0) return null
   return (
     <div style={bannerStyle}>
-      Link <strong>{pinnedLink}</strong> is fixed in world coordinates. Double-click again or press Esc to unfix.
+      {pinnedLinks.length === 1 ? 'Link' : 'Links'} <strong>{pinnedLinks.join(', ')}</strong>{' '}
+      {pinnedLinks.length === 1 ? 'is' : 'are'} fixed in world coordinates. Double-click a link again to unfix it, or press Esc to unfix all.
     </div>
   )
 }

@@ -6,7 +6,6 @@ import { Goal } from 'closed-chain-ik/src/core/Goal.js'
 import { Joint } from 'closed-chain-ik/src/core/Joint.js'
 import type { DOF } from 'closed-chain-ik/src/core/Joint.js'
 import { Link } from 'closed-chain-ik/src/core/Link.js'
-import { Frame } from 'closed-chain-ik/src/core/Frame.js'
 import { urdfRobotToIKRoot } from 'closed-chain-ik/src/three/urdfHelpers.js'
 import type { URDFRobot } from 'urdf-loader'
 
@@ -28,7 +27,7 @@ const DOF_EZ = 5 as DOF
  * (from the trajectory / drag state), and the solver adjusts joint values:
  *
  * - solvePositionGoal: drag a link to a world position (default drag mode).
- * - solvePoseGoal: keep a pinned link at a fixed world pose while the base
+ * - solvePoseGoals: keep pinned links at fixed world poses while the base
  *   moves (pinned drag mode).
  *
  * Joint values are exchanged with the caller as name->angle maps matching
@@ -39,8 +38,7 @@ export class IkSolver {
   private solver: Solver
   private ikJoints = new Map<string, Joint>()
   private ikLinks = new Map<string, Link>()
-  private goal: Goal | null = null
-  private goalKey = ''
+  private goals = new Map<string, Goal>()
 
   constructor(urdfRobot: URDFRobot) {
     // Keep all links (trimUnused=false) so hands/head remain valid IK targets.
@@ -70,21 +68,6 @@ export class IkSolver {
     return this.ikLinks.has(linkName)
   }
 
-  /** Counts actuated DoF from the link up to the IK root (excluding the base). */
-  getChainActuatedDoF(linkName: string): number {
-    const link = this.ikLinks.get(linkName)
-    if (!link) return 0
-    let count = 0
-    let curr: Frame | null = link.parent
-    while (curr) {
-      if (curr instanceof Joint && curr.dof.length > 0) {
-        count += curr.dof.length
-      }
-      curr = curr.parent
-    }
-    return count
-  }
-
   /** Sets the base pose (xyz + wxyz) and joint values the solve starts from. */
   setConfiguration(basePos: THREE.Vector3, baseQuat: THREE.Quaternion, jointValues: Map<string, number>): void {
     this.ikRoot.setPosition(basePos.x, basePos.y, basePos.z)
@@ -100,28 +83,27 @@ export class IkSolver {
 
   /** Positions-only goal (translation DoF), used for dragging a link. */
   solvePositionGoal(linkName: string, targetPos: THREE.Vector3): void {
+    this.keepGoalKeys([`${linkName}|pos`])
     const goal = this.ensureGoal(linkName, false)
     goal.setPosition(targetPos.x, targetPos.y, targetPos.z)
     goal.setMatrixNeedsUpdate()
     this.solver.solve()
   }
 
-  /** Full pose goal (translation + rotation DoF), used for pinned links. */
-  solvePoseGoal(linkName: string, targetPos: THREE.Vector3, targetQuat: THREE.Quaternion): void {
-    const goal = this.ensureGoal(linkName, true)
-    goal.setPosition(targetPos.x, targetPos.y, targetPos.z)
-    goal.setQuaternion(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w)
-    goal.setMatrixNeedsUpdate()
+  /** Full-pose goals solved together, used for one or more pinned links. */
+  solvePoseGoals(targets: ReadonlyMap<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>): void {
+    this.keepGoalKeys([...targets.keys()].map(name => `${name}|pose`))
+    for (const [linkName, target] of targets) {
+      const goal = this.ensureGoal(linkName, true)
+      goal.setPosition(target.pos.x, target.pos.y, target.pos.z)
+      goal.setQuaternion(target.quat.x, target.quat.y, target.quat.z, target.quat.w)
+      goal.setMatrixNeedsUpdate()
+    }
     this.solver.solve()
   }
 
-  clearGoal(): void {
-    if (this.goal) {
-      try { this.goal.removeChild(this.goal.child!) } catch (_) { /* already detached */ }
-      this.goal = null
-      this.goalKey = ''
-      this.solver.updateStructure()
-    }
+  clearGoals(): void {
+    this.keepGoalKeys([])
   }
 
   /** Reads solved joint values as urdfJointName -> angle. */
@@ -137,13 +119,8 @@ export class IkSolver {
 
   private ensureGoal(linkName: string, withRotation: boolean): Goal {
     const key = `${linkName}|${withRotation ? 'pose' : 'pos'}`
-    if (this.goal && this.goalKey === key) return this.goal
-
-    if (this.goal) {
-      try { this.goal.removeChild(this.goal.child!) } catch (_) { /* already detached */ }
-      this.goal = null
-      this.goalKey = ''
-    }
+    const existing = this.goals.get(key)
+    if (existing) return existing
     const link = this.ikLinks.get(linkName)
     if (!link) throw new Error(`IkSolver: unknown link "${linkName}"`)
 
@@ -152,9 +129,20 @@ export class IkSolver {
     else goal.setDoF(DOF_X, DOF_Y, DOF_Z)
     goal.makeClosure(link)
 
-    this.goal = goal
-    this.goalKey = key
+    this.goals.set(key, goal)
     this.solver.updateStructure()
     return goal
+  }
+
+  private keepGoalKeys(goalKeys: string[]): void {
+    const keep = new Set(goalKeys)
+    let changed = false
+    for (const [key, goal] of this.goals) {
+      if (keep.has(key)) continue
+      try { goal.removeChild(goal.child!) } catch { /* already detached */ }
+      this.goals.delete(key)
+      changed = true
+    }
+    if (changed) this.solver.updateStructure()
   }
 }

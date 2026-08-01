@@ -2,7 +2,7 @@ import { useStore } from '../state/store'
 import { useCallback, useEffect, useRef } from 'react'
 
 export function OpsPanel() {
-  const { fillRange, smoothRange, isPlaying, setIsPlaying, trajectory } = useStore()
+  const { fillRange, smoothRange, interpolateRange, isPlaying, setIsPlaying, trajectory } = useStore()
   const timerRef = useRef<number>(0)
 
   const togglePlay = useCallback(() => {
@@ -30,6 +30,7 @@ export function OpsPanel() {
       <h3>Operations</h3>
       <button onClick={fillRange}>Fill</button>
       <button onClick={smoothRange}>Smooth</button>
+      <button onClick={interpolateRange}>Interpolate</button>
       <button onClick={togglePlay}>{isPlaying ? 'Pause' : 'Play'}</button>
     </div>
   )

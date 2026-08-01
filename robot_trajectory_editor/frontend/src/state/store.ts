@@ -12,7 +12,7 @@ export interface StoreState {
   segmentStart: number | null
   segmentEnd: number | null
   isPlaying: boolean
-  pinnedLink: string | null
+  pinnedLinks: string[]
   robotModelLoaded: boolean
   /** Value step applied by the Up/Down arrow keys (from backend /api/config). */
   nudgeStep: number
@@ -30,7 +30,8 @@ export interface StoreState {
   setSelectedChannel: (c: ChannelKind | null) => void
   setSegment: (start: number | null, end: number | null) => void
   setIsPlaying: (p: boolean) => void
-  setPinnedLink: (name: string | null) => void
+  togglePinnedLink: (name: string) => void
+  clearPinnedLinks: () => void
   setRobotModelLoaded: (l: boolean) => void
   setNudgeStep: (step: number) => void
   /** Move the selected channel's value at the current frame by ±nudgeStep. */
@@ -44,6 +45,8 @@ export interface StoreState {
   /** Low-pass smooth of the selected channel over the segment (or whole trajectory):
    *  removes high-frequency jitter, preserves the overall motion shape. */
   smoothRange: () => void
+  /** Linearly interpolate the selected channel between selected segment endpoints. */
+  interpolateRange: () => void
 }
 
 export const useStore = create<StoreState>((set, get) => ({
@@ -55,7 +58,7 @@ export const useStore = create<StoreState>((set, get) => ({
   segmentStart: null,
   segmentEnd: null,
   isPlaying: false,
-  pinnedLink: null,
+  pinnedLinks: [],
   robotModelLoaded: false,
   nudgeStep: 0.01,
   frameStep: 1,
@@ -83,7 +86,12 @@ export const useStore = create<StoreState>((set, get) => ({
   setSelectedChannel: (c) => set({ selectedChannel: c }),
   setSegment: (start, end) => set({ segmentStart: start, segmentEnd: end }),
   setIsPlaying: (p) => set({ isPlaying: p }),
-  setPinnedLink: (name) => set({ pinnedLink: name }),
+  togglePinnedLink: (name) => set(s => ({
+    pinnedLinks: s.pinnedLinks.includes(name)
+      ? s.pinnedLinks.filter(link => link !== name)
+      : [...s.pinnedLinks, name],
+  })),
+  clearPinnedLinks: () => set({ pinnedLinks: [] }),
   setRobotModelLoaded: (l) => set({ robotModelLoaded: l }),
   setNudgeStep: (step) => set({ nudgeStep: step }),
 
@@ -133,6 +141,17 @@ export const useStore = create<StoreState>((set, get) => ({
     const start = segmentStart ?? 0
     const end = segmentEnd ?? trajectory.frameCount - 1
     trajectory.smoothRange(start, end, selectedChannel)
+    get().touchTrajectory()
+  },
+
+  interpolateRange: () => {
+    const { trajectory, selectedChannel, segmentStart, segmentEnd } = get()
+    if (!selectedChannel || segmentStart === null || segmentEnd === null || trajectory.frameCount === 0) return
+    const start = Math.min(segmentStart, segmentEnd)
+    const end = Math.max(segmentStart, segmentEnd)
+    if (start === end) return
+    get().beginTrajectoryEdit()
+    trajectory.interpolateChannelRange(start, end, selectedChannel)
     get().touchTrajectory()
   },
 }))

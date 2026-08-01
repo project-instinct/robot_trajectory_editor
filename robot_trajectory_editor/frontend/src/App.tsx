@@ -21,8 +21,8 @@ function App() {
   const [showTerrainEditor, setShowTerrainEditor] = useState(false)
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
   const {
-    trajectory, trajectoryVersion, currentFrame, pinnedLink,
-    setRobotModelLoaded, setPinnedLink, setSegment, setNudgeStep, setFrameStep, undo,
+    trajectory, trajectoryVersion, currentFrame, pinnedLinks,
+    setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, undo,
   } = useStore()
 
   // Pull launch-time config (e.g. arrow-key nudge/frame steps) from the backend.
@@ -99,13 +99,13 @@ function App() {
   useEffect(() => {
     const vp = viewportInstance.current
     if (!vp?.robotModel) return
-    vp.robotModel.setPinned(pinnedLink)
-  }, [pinnedLink])
+    vp.robotModel.setPinned(pinnedLinks)
+  }, [pinnedLinks])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (useStore.getState().pinnedLink) setPinnedLink(null)
+        if (useStore.getState().pinnedLinks.length > 0) clearPinnedLinks()
         else setSegment(null, null)
         return
       }
@@ -138,7 +138,7 @@ function App() {
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [setPinnedLink, setSegment, undo])
+  }, [clearPinnedLinks, setSegment, undo])
 
   const handleLoadTerrain = useCallback((group: THREE.Group) => {
     setTerrain(group)

@@ -55,6 +55,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - "Smooth": Removes high-frequency jitter from the selected state trajectory (low-pass filtering) when clicked, while preserving the overall shape of the motion. If a segment of the tlimeline is selected, only that segment will be smoothed. If no segment is selected, the entire trajectory will be smoothed.
 
+    - "Interpolate": Interpolate the selected segment of the trajectory using linear interpolation from the start frame to the end frame. If no segment is selected, no interpolation will be performed.
+
 - In the main 3D window, where the user can click and drag the robot to change its current position and orientation.
 
     - All cooresponding state (either joint position or base position/orientation) will be updated in the timeline and the robot state panel.
@@ -66,6 +68,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
         - The mesh of the fixed link should be highlighted in the main 3D window.
 
         - The user can double-click the fixed link again to unfix it, and the editing mode will return to the default mode where the robot body can be dragged to change its joint positions.
+
+        - Allowing multiple links to be fixed in the world coordinate system is required functionality. The user can double-click any link to fix it, and double-click the same link again to unfix it.
 
 - When the `Edit Target` is selected. The user pressing "Up" or "Down" arrow key shall move the value of the selected target up or down by a small step. The step size can be adjusted in the launch terminal.
 

@@ -33,16 +33,17 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Left / Right: move the playhead by the frame step (no target selection needed).</Item>
             <Item>Space: toggle play / pause.</Item>
             <Item>Ctrl+Z / Cmd+Z: undo the last trajectory edit.</Item>
-            <Item>Esc: unfix a pinned link, or clear the selected segment.</Item>
+            <Item>Esc: unfix all pinned links, or clear the selected segment.</Item>
           </Section>
           <Section title="3D Viewport">
             <Item>Drag a body link to move it; joint positions are solved by IK and written to the current frame.</Item>
             <Item>Drag the robot base to translate it; Shift + drag the base to rotate (yaw).</Item>
-            <Item>Double-click a link to fix it in the world frame: its mesh is highlighted, and dragging then moves the base while IK keeps the link fixed. Double-click it again (or press Esc) to unfix.</Item>
+            <Item>Double-click links to fix their positions and orientations in the world frame. Pinned meshes are highlighted; double-click one again to unfix it, or press Esc to unfix all.</Item>
           </Section>
           <Section title="Operations (right panel)">
             <Item>Fill: fill the selected channel with its current-frame value over the selected segment (or the whole trajectory).</Item>
             <Item>Smooth: low-pass filter the selected channel over the selected segment (or the whole trajectory).</Item>
+            <Item>Interpolate: linearly interpolate the selected channel between the selected segment endpoints.</Item>
             <Item>Play / Pause: play the trajectory at its framerate.</Item>
           </Section>
         </div>

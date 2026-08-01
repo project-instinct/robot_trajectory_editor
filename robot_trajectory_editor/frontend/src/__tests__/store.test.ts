@@ -25,6 +25,7 @@ beforeEach(() => {
     segmentStart: null,
     segmentEnd: null,
     isPlaying: false,
+    pinnedLinks: [],
     nudgeStep: 0.01,
     frameStep: 1,
   })
@@ -100,6 +101,46 @@ describe('undo', () => {
     expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(original + 0.01)
     s().undo()
     expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(original)
+  })
+})
+
+describe('interpolateRange', () => {
+  it('interpolates the selected segment and can be undone', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 0 })
+    s().setSegment(1, 5)
+    s().trajectory.setChannelValue(1, { kind: 'joint', index: 0 }, 1)
+    s().trajectory.setChannelValue(3, { kind: 'joint', index: 0 }, 99)
+    s().trajectory.setChannelValue(5, { kind: 'joint', index: 0 }, 3)
+
+    s().interpolateRange()
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(2)
+    expect(s().trajectoryVersion).toBe(1)
+
+    s().undo()
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(99)
+  })
+
+  it('does nothing without both a selected channel and segment', () => {
+    const s = () => useStore.getState()
+    s().interpolateRange()
+    s().setSelectedChannel({ kind: 'joint', index: 0 })
+    s().interpolateRange()
+    expect(s().trajectoryVersion).toBe(0)
+    expect(s().undoStack).toHaveLength(0)
+  })
+})
+
+describe('pinned links', () => {
+  it('toggles multiple links independently and clears all links', () => {
+    const s = () => useStore.getState()
+    s().togglePinnedLink('left_foot')
+    s().togglePinnedLink('right_foot')
+    expect(s().pinnedLinks).toEqual(['left_foot', 'right_foot'])
+    s().togglePinnedLink('left_foot')
+    expect(s().pinnedLinks).toEqual(['right_foot'])
+    s().clearPinnedLinks()
+    expect(s().pinnedLinks).toEqual([])
   })
 })
 

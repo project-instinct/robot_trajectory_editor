@@ -30,7 +30,7 @@ export class RobotModel {
   jointMap: Map<string, JointBinding> = new Map()
   linkMeshes: Map<string, THREE.Mesh[]> = new Map()
   linkNodes: Map<string, THREE.Object3D> = new Map()
-  pinnedLink: string | null = null
+  pinnedLinks: string[] = []
   private pinnedOriginals: [THREE.Mesh, THREE.Material | THREE.Material[]][] = []
   private warnedInvalidFrame = false
 
@@ -142,25 +142,27 @@ export class RobotModel {
     return { pos, quat }
   }
 
-  /** Highlights the pinned link's meshes; restores original materials on unpin. */
-  setPinned(linkName: string | null): void {
-    if (this.pinnedLink === linkName) return
-    this.pinnedLink = linkName
+  /** Highlights pinned links' meshes; restores original materials on unpin. */
+  setPinned(linkNames: string[]): void {
+    if (this.pinnedLinks.length === linkNames.length && this.pinnedLinks.every((name, i) => name === linkNames[i])) return
+    this.pinnedLinks = [...linkNames]
 
     for (const [mesh, mat] of this.pinnedOriginals) mesh.material = mat
     this.pinnedOriginals = []
 
-    if (!linkName) return
+    if (linkNames.length === 0) return
     // Meshes attach asynchronously after load; make sure the map is current.
     this.refreshLinkMeshes()
-    const meshes = this.linkMeshes.get(linkName)
-    if (!meshes) return
-    for (const mesh of meshes) {
-      this.pinnedOriginals.push([mesh, mesh.material])
-      const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
-      const highlight = (src as THREE.MeshStandardMaterial).clone()
-      if (highlight.emissive) highlight.emissive.set(0x664400)
-      mesh.material = highlight
+    for (const linkName of linkNames) {
+      const meshes = this.linkMeshes.get(linkName)
+      if (!meshes) continue
+      for (const mesh of meshes) {
+        this.pinnedOriginals.push([mesh, mesh.material])
+        const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
+        const highlight = (src as THREE.MeshStandardMaterial).clone()
+        if (highlight.emissive) highlight.emissive.set(0x664400)
+        mesh.material = highlight
+      }
     }
   }
 }

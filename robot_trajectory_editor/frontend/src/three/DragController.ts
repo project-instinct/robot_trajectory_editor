@@ -12,9 +12,8 @@ const Z_AXIS = new THREE.Vector3(0, 0, 1)
  * Viewport drag editing:
  * - default mode: dragging a body link IK-drags that link (base stays);
  *   dragging the base (root) link translates the base (Shift+drag = yaw).
- * - pinned mode (double-click a link): the link is held at its pin-time world
- *   pose; dragging moves/rotates the base and IK re-solves the joints so the
- *   pinned link stays fixed.
+ * - pinned mode (double-click links): every pinned link is held at its pin-time
+ *   world pose; dragging moves/rotates the base and IK re-solves the joints.
  * All edits are written to the trajectory at the current frame.
  *
  * Pointer handlers run in the capture phase and stop propagation when a drag
@@ -38,8 +37,7 @@ export class DragController {
   private pendingRotate = false
   private dirty = false
 
-  private pinnedPos = new THREE.Vector3()
-  private pinnedQuat = new THREE.Quaternion()
+  private pinnedPoses = new Map<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>()
 
   constructor(viewport: Viewport) {
     this.viewport = viewport
@@ -122,7 +120,7 @@ export class DragController {
     this.startBaseQuat.copy(quat)
     this.grabOffset.copy(pos).sub(hit.point)
 
-    if (store.pinnedLink) {
+    if (store.pinnedLinks.length > 0) {
       // Pinned mode: any robot drag moves the base; IK restores the pinned link.
       this.mode = 'base'
       this.dragLinkName = ''
@@ -167,19 +165,18 @@ export class DragController {
     if (!linkName) return
 
     const store = useStore.getState()
-    if (store.pinnedLink === linkName) {
-      store.setPinnedLink(null)
-      this.robot.setPinned(null)
-      this.ikSolver?.clearGoal()
+    if (store.pinnedLinks.includes(linkName)) {
+      this.pinnedPoses.delete(linkName)
+      store.togglePinnedLink(linkName)
+      this.robot.setPinned(store.pinnedLinks.filter(name => name !== linkName))
     } else {
       const pose = this.robot.getLinkWorldPose(linkName)
       if (!pose) return
-      this.ikSolver?.clearGoal()
-      this.pinnedPos.copy(pose.pos)
-      this.pinnedQuat.copy(pose.quat)
-      store.setPinnedLink(linkName)
-      this.robot.setPinned(linkName)
+      this.pinnedPoses.set(linkName, { pos: pose.pos.clone(), quat: pose.quat.clone() })
+      store.togglePinnedLink(linkName)
+      this.robot.setPinned([...store.pinnedLinks, linkName])
     }
+    this.ikSolver?.clearGoals()
   }
 
   /** Called every frame from the viewport render loop; applies pending drags. */
@@ -188,7 +185,7 @@ export class DragController {
     this.dirty = false
 
     const store = useStore.getState()
-    const { trajectory, currentFrame, pinnedLink } = store
+    const { trajectory, currentFrame, pinnedLinks } = store
     if (trajectory.frameCount === 0) return
 
     if (this.mode === 'base') {
@@ -206,13 +203,14 @@ export class DragController {
       }
       trajectory.setBasePose(currentFrame, [newPos.x, newPos.y, newPos.z], [newQuat.w, newQuat.x, newQuat.y, newQuat.z])
 
-      if (pinnedLink && this.ikSolver?.hasLink(pinnedLink)) {
+      if (pinnedLinks.length > 0 && this.ikSolver) {
         this.ikSolver.setConfiguration(newPos, newQuat, this.frameJointMap())
-        if (this.ikSolver.getChainActuatedDoF(pinnedLink) >= 6) {
-          this.ikSolver.solvePoseGoal(pinnedLink, this.pinnedPos, this.pinnedQuat)
-        } else {
-          this.ikSolver.solvePositionGoal(pinnedLink, this.pinnedPos)
+        const goals = new Map<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>()
+        for (const linkName of pinnedLinks) {
+          const pose = this.pinnedPoses.get(linkName)
+          if (pose && this.ikSolver.hasLink(linkName)) goals.set(linkName, pose)
         }
+        this.ikSolver.solvePoseGoals(goals)
         this.writeSolvedJoints(this.ikSolver.getJointValues())
       }
     } else if (this.mode === 'link' && this.ikSolver) {
