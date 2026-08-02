@@ -32,6 +32,8 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Up / Down: nudge the selected target by the step size. If a timeline segment is selected, every frame in the segment is nudged; otherwise only the current frame.</Item>
             <Item>Left / Right: move the playhead by the frame step (no target selection needed).</Item>
             <Item>Space: toggle play / pause.</Item>
+            <Item>I / O: set the selected segment's start / end to the current playhead frame. With no existing segment, I selects through the final frame and O selects from frame 0. If a new start is after the existing end, the end resets to the final frame.</Item>
+            <Item>U: clear the selected segment.</Item>
             <Item>Ctrl+Z / Cmd+Z: undo the last trajectory edit.</Item>
             <Item>Ctrl+S / Cmd+S: open the dialog to save the trajectory as <code>.npz</code>.</Item>
             <Item>Esc: unfix all pinned links, or clear the selected segment.</Item>

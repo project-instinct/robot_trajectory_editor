@@ -59,6 +59,7 @@ cd robot_trajectory_editor/frontend && npm test
 
 - Click / drag: scrub playhead; mouse wheel: step frames
 - Shift+drag: select segment (Fill/Smooth apply to it; Esc clears)
+- `I` / `O`: set the segment start/end to the current playhead frame; when used alone, the other endpoint defaults to the timeline end/start; `U`: clear it
 - Double-click: add keyframe anchor at that frame
 - Drag keyframe: horizontal = retime anchor, vertical = edit selected channel value
 - Right-click keyframe: remove it
@@ -68,6 +69,8 @@ cd robot_trajectory_editor/frontend && npm test
 - `Up` / `Down`: nudge the selected Edit Target's value at the current frame by `--nudge-step`
 - `Left` / `Right`: step the current frame backward/forward by `--frame-step` (works with or without an Edit Target selected)
 - `Space`: toggle trajectory playback (play/pause)
+- `I` / `O`: set the selected segment's start/end to the current playhead frame (a lone `I` selects to the timeline end; a lone `O` selects from the timeline start; selecting a start after the existing end resets the end to the timeline end)
+- `U`: clear the selected timeline segment
 - `Esc`: unpin the pinned link, or clear the segment selection
 
 ## CLI Options

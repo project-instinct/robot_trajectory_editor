@@ -142,6 +142,17 @@ function App() {
         if (s.trajectory.frameCount === 0) return
         e.preventDefault()
         s.setIsPlaying(!s.isPlaying)
+      } else if (e.code === 'KeyI') {
+        if (s.trajectory.frameCount === 0) return
+        e.preventDefault()
+        s.setSegmentStart(s.currentFrame)
+      } else if (e.code === 'KeyO') {
+        if (s.trajectory.frameCount === 0) return
+        e.preventDefault()
+        s.setSegmentEnd(s.currentFrame)
+      } else if (e.code === 'KeyU') {
+        e.preventDefault()
+        s.setSegment(null, null)
       }
     }
     window.addEventListener('keydown', handleKeyDown, true)

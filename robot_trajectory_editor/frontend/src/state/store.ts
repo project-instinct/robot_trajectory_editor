@@ -29,6 +29,10 @@ export interface StoreState {
   setCurrentFrame: (f: number) => void
   setSelectedChannel: (c: ChannelKind | null) => void
   setSegment: (start: number | null, end: number | null) => void
+  /** Set the segment start, preserving a valid end or falling back to the final frame. */
+  setSegmentStart: (frame: number) => void
+  /** Set the segment end, falling back to the first frame when no start exists. */
+  setSegmentEnd: (frame: number) => void
   setIsPlaying: (p: boolean) => void
   togglePinnedLink: (name: string) => void
   clearPinnedLinks: () => void
@@ -85,6 +89,19 @@ export const useStore = create<StoreState>((set, get) => ({
   setCurrentFrame: (f) => set({ currentFrame: f }),
   setSelectedChannel: (c) => set({ selectedChannel: c }),
   setSegment: (start, end) => set({ segmentStart: start, segmentEnd: end }),
+  setSegmentStart: (frame) => {
+    const { trajectory, segmentEnd } = get()
+    if (trajectory.frameCount === 0) return
+    const end = segmentEnd === null || frame > segmentEnd
+      ? trajectory.frameCount - 1
+      : segmentEnd
+    set({ segmentStart: frame, segmentEnd: end })
+  },
+  setSegmentEnd: (frame) => {
+    const { trajectory, segmentStart } = get()
+    if (trajectory.frameCount === 0) return
+    set({ segmentStart: segmentStart ?? 0, segmentEnd: frame })
+  },
   setIsPlaying: (p) => set({ isPlaying: p }),
   togglePinnedLink: (name) => set(s => ({
     pinnedLinks: s.pinnedLinks.includes(name)
@@ -127,8 +144,10 @@ export const useStore = create<StoreState>((set, get) => ({
     const { trajectory, selectedChannel, currentFrame, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
     get().beginTrajectoryEdit()
-    const start = segmentStart ?? 0
-    const end = segmentEnd ?? trajectory.frameCount - 1
+    const selectedStart = segmentStart ?? 0
+    const selectedEnd = segmentEnd ?? trajectory.frameCount - 1
+    const start = Math.min(selectedStart, selectedEnd)
+    const end = Math.max(selectedStart, selectedEnd)
     const value = trajectory.getChannelValue(currentFrame, selectedChannel)
     trajectory.fillChannelRange(start, end, selectedChannel, value)
     get().touchTrajectory()
@@ -138,8 +157,10 @@ export const useStore = create<StoreState>((set, get) => ({
     const { trajectory, selectedChannel, segmentStart, segmentEnd } = get()
     if (!selectedChannel || trajectory.frameCount === 0) return
     get().beginTrajectoryEdit()
-    const start = segmentStart ?? 0
-    const end = segmentEnd ?? trajectory.frameCount - 1
+    const selectedStart = segmentStart ?? 0
+    const selectedEnd = segmentEnd ?? trajectory.frameCount - 1
+    const start = Math.min(selectedStart, selectedEnd)
+    const end = Math.max(selectedStart, selectedEnd)
     trajectory.smoothRange(start, end, selectedChannel)
     get().touchTrajectory()
   },

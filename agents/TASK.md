@@ -75,6 +75,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - No matter whether the `Edit Target` is selected. As long as the motion is loaded, the user pressing "Left" or "Right" arrow key shall move the value of the selected target left or right by a small step. The step size can be adjusted in the launch terminal.
 
+### Keyboard Shortcuts
+
 - When the user press "Space" key, the trajectory playback will be toggled between play and pause.
 
 - When the user press "Ctrl + Z" key, the last operation will be undone.
@@ -82,6 +84,10 @@ This is the source code of a web-based robot trajectory editor. It allows users 
     - When the user keep pressing "Ctrl + Z" key, the previous operations will be undone one by one continusly.
 
 - When the user press "Ctrl + S" key, pop up the windows to save the trajectory file.
+
+- When the user press "I" key, or "O" key, the current cursor frame shall be selected as the start frame or end frame of the timeline segment, respectively. Pressing "U" key will unselect the timeline segment.
+
+    - When only "I" or "O" key is pressed, the timeline segment will be selected from the start frame to the end of the timeline, or from the start of the timeline to the end frame, respectively.
 
 ### Implementation Requirements
 

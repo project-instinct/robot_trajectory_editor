@@ -65,12 +65,57 @@ describe('fillRange', () => {
     }
   })
 
+  it('keeps working when the segment is reselected from right to left', () => {
+    const s = () => useStore.getState()
+    const channel = { kind: 'joint', index: 0 } as const
+    s().setSelectedChannel(channel)
+    s().setSegment(2, 5)
+    s().fillRange()
+
+    s().setCurrentFrame(7)
+    s().setSegment(8, 6)
+    s().fillRange()
+
+    for (let f = 6; f <= 8; f++) {
+      expect(s().trajectory.getChannelValue(f, channel)).toBeCloseTo(0.7)
+    }
+    expect(s().trajectoryVersion).toBe(2)
+  })
+
   it('is a no-op without a selected channel', () => {
     const s = () => useStore.getState()
     s().setSegment(2, 5)
     s().fillRange()
     expect(s().trajectoryVersion).toBe(0)
     expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+  })
+})
+
+describe('segment endpoint selection', () => {
+  it('preserves an existing end when the new start is before it', () => {
+    const s = () => useStore.getState()
+    s().setSegment(null, 7)
+    s().setSegmentStart(3)
+    expect(s().segmentStart).toBe(3)
+    expect(s().segmentEnd).toBe(7)
+  })
+
+  it('resets the end to the final frame when the new start is after it', () => {
+    const s = () => useStore.getState()
+    s().setSegment(null, 4)
+    s().setSegmentStart(6)
+    expect(s().segmentStart).toBe(6)
+    expect(s().segmentEnd).toBe(9)
+  })
+
+  it('uses the timeline bounds when either endpoint is selected alone', () => {
+    const s = () => useStore.getState()
+    s().setSegmentStart(3)
+    expect([s().segmentStart, s().segmentEnd]).toEqual([3, 9])
+
+    s().setSegment(null, null)
+    s().setSegmentEnd(7)
+    expect([s().segmentStart, s().segmentEnd]).toEqual([0, 7])
   })
 })
 
