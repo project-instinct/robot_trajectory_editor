@@ -61,7 +61,7 @@ cd robot_trajectory_editor/frontend && npm test
 - Shift+drag: select segment (Fill/Smooth apply to it; Esc clears)
 - `I` / `O`: set the segment start/end to the current playhead frame; when used alone, the other endpoint defaults to the timeline end/start; `U`: clear it
 - Double-click: add keyframe anchor at that frame
-- Drag keyframe: horizontal = retime anchor while the playhead and 3D scene follow, vertical = edit selected channel value
+- Drag keyframe like a drawing pen: horizontal = time, vertical = selected channel value; the playhead and 3D scene follow
 - Right-click keyframe: remove it
 
 ## Keyboard Shortcuts

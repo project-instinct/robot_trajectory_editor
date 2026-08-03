@@ -4,7 +4,14 @@ import { useRef, useEffect, useCallback } from 'react'
 type DragState =
   | { type: 'scrub' }
   | { type: 'segment' }
-  | { type: 'keyframe'; startClientY: number; startValue: number; curFrame: number }
+  | {
+      type: 'keyframe'
+      startClientY: number
+      startValue: number
+      lastValue: number
+      valuePerPixel: number
+      curFrame: number
+    }
   | null
 
 const KF_HIT_PX = 6
@@ -55,7 +62,17 @@ export function Timeline() {
     if (kf !== null && !e.shiftKey) {
       beginTrajectoryEdit()
       const startValue = selectedChannel ? trajectory.getChannelValue(kf, selectedChannel) : 0
-      dragRef.current = { type: 'keyframe', startClientY: e.clientY, startValue, curFrame: kf }
+      const rect = canvasRef.current?.getBoundingClientRect()
+      const { vMin, vMax } = scaleRef.current
+      const valuePerPixel = rect && rect.height > 0 ? (vMax - vMin) / rect.height : 0
+      dragRef.current = {
+        type: 'keyframe',
+        startClientY: e.clientY,
+        startValue,
+        lastValue: startValue,
+        valuePerPixel,
+        curFrame: kf,
+      }
       setCurrentFrame(kf)
       return
     }
@@ -99,25 +116,34 @@ export function Timeline() {
         if (store.segmentStart !== null) store.setSegment(store.segmentStart, frameFromX(e.clientX))
         return
       }
-      // keyframe drag: horizontal = retime anchor, vertical = edit channel value
+      // Treat the keyframe as a drawing pen: X controls time, Y controls the
+      // selected channel value, and interpolate across skipped pointer frames.
+      const previousFrame = drag.curFrame
       const newFrame = frameFromX(e.clientX)
-      if (newFrame !== drag.curFrame) {
-        trajectory.removeKeyframe(drag.curFrame)
+      const channel = store.selectedChannel
+      let changed = false
+      if (channel) {
+        const newValue = drag.startValue
+          + (drag.startClientY - e.clientY) * drag.valuePerPixel
+        if (newFrame === previousFrame) {
+          trajectory.setChannelValue(newFrame, channel, newValue)
+        } else {
+          trajectory.setChannelValue(previousFrame, channel, drag.lastValue)
+          trajectory.setChannelValue(newFrame, channel, newValue)
+          trajectory.interpolateChannelRange(previousFrame, newFrame, channel)
+        }
+        drag.lastValue = newValue
+        changed = true
+      }
+
+      if (newFrame !== previousFrame) {
+        trajectory.removeKeyframe(previousFrame)
         trajectory.insertKeyframe(newFrame)
         drag.curFrame = newFrame
         store.setCurrentFrame(newFrame)
-        store.touchTrajectory()
+        changed = true
       }
-      const channel = store.selectedChannel
-      if (channel && trajectory.hasKeyframe(drag.curFrame)) {
-        const rect = canvasRef.current?.getBoundingClientRect()
-        if (rect && rect.height > 0) {
-          const { vMin, vMax } = scaleRef.current
-          const dv = ((drag.startClientY - e.clientY) / rect.height) * (vMax - vMin)
-          trajectory.setChannelValue(drag.curFrame, channel, drag.startValue + dv)
-          store.touchTrajectory()
-        }
-      }
+      if (changed) store.touchTrajectory()
     }
 
     const handleWindowMouseUp = () => {

@@ -24,7 +24,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
           <Section title="Timeline (bottom)">
             <Item>Click or drag on the timeline to scrub the playhead.</Item>
             <Item>Shift + drag to select a segment; it is highlighted and targeted by Fill / Smooth / Interpolate / arrow nudges.</Item>
-            <Item>Double-click to add a keyframe anchor; drag it horizontally to retime while the playhead and 3D scene follow, or vertically to change the value of the selected target.</Item>
+            <Item>Double-click to add a keyframe anchor. Drag it like a pen to draw the selected target curve: horizontal movement changes time, vertical movement changes value, and the playhead and 3D scene follow.</Item>
             <Item>Right-click a keyframe to remove it.</Item>
             <Item>Mouse wheel steps the playhead.</Item>
           </Section>

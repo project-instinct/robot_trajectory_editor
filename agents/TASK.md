@@ -53,7 +53,7 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - Double-clicking the timeline adds a keyframe anchor at the clicked frame.
 
-    - Dragging a keyframe anchor horizontally moves it to another frame, when the entire 3D visualizer scene, frame cursor should also be updated. Dragging it vertically changes the selected `Edit Target` value at that keyframe.
+    - Dragging a keyframe anchor draws the selected `Edit Target` plot on the timeline: horizontal movement changes the frame, vertical movement changes the value, and values are drawn continuously across crossed frames. The frame cursor and the entire 3D visualizer scene should follow the dragged anchor.
 
     - Right-clicking a keyframe anchor removes it.
 
