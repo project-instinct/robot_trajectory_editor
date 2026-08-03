@@ -2,6 +2,8 @@
 
 Web-based editor for inspecting, repairing, and authoring robot joint and floating-base trajectories directly against a URDF model in 3D.
 
+Teaser: ![teaser](media/teaser.gif)
+
 ## Key Features
 
 - **Trajectory I/O and playback**: load and save `.npz` motions, scrub or play them on a URDF robot, and inspect or numerically edit every joint and base channel.
