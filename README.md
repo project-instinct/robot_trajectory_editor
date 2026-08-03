@@ -64,6 +64,10 @@ cd robot_trajectory_editor/frontend && npm test
 - Drag keyframe like a drawing pen: horizontal = time, vertical = selected channel value; the playhead and 3D scene follow
 - Right-click keyframe: remove it
 
+## Cartesian Interpolation
+
+Select a timeline segment, click **Cartesian Interpolate**, choose one or more links and a linear or cubic method, then click **Apply**. Link positions and orientations are interpolated in world space and solved back to the floating-base pose and joint positions with IK. The edit is transactional: if IK fails on any frame, the trajectory remains unchanged.
+
 ## Keyboard Shortcuts
 
 - `Up` / `Down`: nudge the selected Edit Target's value at the current frame by `--nudge-step`

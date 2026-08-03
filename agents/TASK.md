@@ -49,6 +49,11 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - "Interpolate": Interpolate the selected segment of the trajectory using linear interpolation from the start frame to the end frame. If no segment is selected, no interpolation will be performed.
 
+    - "Cartesian Interpolate": Interpolate the 3D position and orientation of some selected link using linear interpolation from the start frame to the end frame (pre-selected in the timeline). Since the robot state is represented in joint space, this button should pop up a window:
+        - Letting the user select what links to interpolate and the interpolation method (linear or cubic).
+        - After clicking "apply" in the popup-window, the editor shall compute the floating-base IK for each frame in the selected segment, and update the base pose and joint position sequences accordingly. If the IK fails for any frame, the editor should display a warning message to the user and abort the application of the interpolation, and stay in the current state without any changes.
+        - After clicking "cancel" in the popup-window, the editor shall do nothing and stay in the current state without any changes.
+
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
 
     - Double-clicking the timeline adds a keyframe anchor at the clicked frame.

@@ -84,6 +84,12 @@ export class RobotModel {
     return b ? { lower: b.lower, upper: b.upper } : null
   }
 
+  /** Links available as Cartesian interpolation targets. */
+  getCartesianTargetLinkNames(): string[] {
+    return [...this.linkNodes.keys()]
+      .sort((a, b) => a.localeCompare(b))
+  }
+
   /**
    * (Re)collects meshes per link. urdf-loader attaches visual meshes
    * asynchronously AFTER its onLoad callback, so this must run lazily

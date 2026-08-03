@@ -47,6 +47,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Fill: fill the selected channel with its current-frame value over the selected segment (or the whole trajectory).</Item>
             <Item>Smooth: low-pass filter the selected channel over the selected segment (or the whole trajectory).</Item>
             <Item>Interpolate: linearly interpolate the selected channel between the selected segment endpoints.</Item>
+            <Item>Cartesian Interpolate: choose robot links and linear or cubic interpolation, then solve their 3D poses over the selected segment with floating-base IK. Base pose and joint values are updated together; if any frame fails, no changes are applied.</Item>
             <Item>Play / Pause: play the trajectory at its framerate.</Item>
           </Section>
         </div>

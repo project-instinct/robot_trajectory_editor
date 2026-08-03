@@ -36,16 +36,19 @@ const DOF_EZ = 5 as DOF
 export class IkSolver {
   private ikRoot: Joint
   private solver: Solver
+  private baseLocked: boolean
   private ikJoints = new Map<string, Joint>()
   private ikLinks = new Map<string, Link>()
   private goals = new Map<string, Goal>()
 
-  constructor(urdfRobot: URDFRobot) {
+  constructor(urdfRobot: URDFRobot, options: { lockBase?: boolean } = {}) {
     // Keep all links (trimUnused=false) so hands/head remain valid IK targets.
     // (d.ts declares a Link return, but for a URDFRobot it returns the root Joint.)
     this.ikRoot = urdfRobotToIKRoot(urdfRobot, false) as unknown as Joint
-    // Lock the floating base: base pose is driven by the trajectory, not IK.
-    this.ikRoot.clearDoF()
+    this.baseLocked = options.lockBase ?? true
+    // Viewport dragging keeps the trajectory-driven base locked. Cartesian
+    // interpolation can opt into solving all six floating-base DoFs.
+    if (this.baseLocked) this.ikRoot.clearDoF()
 
     this.ikRoot.traverse((frame) => {
       const name = frame.name as string
@@ -70,8 +73,18 @@ export class IkSolver {
 
   /** Sets the base pose (xyz + wxyz) and joint values the solve starts from. */
   setConfiguration(basePos: THREE.Vector3, baseQuat: THREE.Quaternion, jointValues: Map<string, number>): void {
-    this.ikRoot.setPosition(basePos.x, basePos.y, basePos.z)
-    this.ikRoot.setQuaternion(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w)
+    if (this.baseLocked) {
+      this.ikRoot.setPosition(basePos.x, basePos.y, basePos.z)
+      this.ikRoot.setQuaternion(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w)
+    } else {
+      this.ikRoot.setDoFValue(DOF_X, basePos.x)
+      this.ikRoot.setDoFValue(DOF_Y, basePos.y)
+      this.ikRoot.setDoFValue(DOF_Z, basePos.z)
+      const euler = new THREE.Euler().setFromQuaternion(baseQuat, 'ZYX')
+      this.ikRoot.setDoFValue(DOF_EX, euler.x)
+      this.ikRoot.setDoFValue(DOF_EY, euler.y)
+      this.ikRoot.setDoFValue(DOF_EZ, euler.z)
+    }
     for (const [name, value] of jointValues) {
       const joint = this.ikJoints.get(name)
       if (joint && joint.dof.length > 0) {
@@ -91,7 +104,7 @@ export class IkSolver {
   }
 
   /** Full-pose goals solved together, used for one or more pinned links. */
-  solvePoseGoals(targets: ReadonlyMap<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>): void {
+  solvePoseGoals(targets: ReadonlyMap<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>): boolean {
     this.keepGoalKeys([...targets.keys()].map(name => `${name}|pose`))
     for (const [linkName, target] of targets) {
       const goal = this.ensureGoal(linkName, true)
@@ -99,7 +112,10 @@ export class IkSolver {
       goal.setQuaternion(target.quat.x, target.quat.y, target.quat.z, target.quat.w)
       goal.setMatrixNeedsUpdate()
     }
-    this.solver.solve()
+    const statuses = this.solver.solve()
+    // SOLVE_STATUS.CONVERGED is 0. Avoid importing the package's ambient const
+    // enum at runtime (the same reason the DoF values above are mirrored).
+    return statuses.length > 0 && statuses.every(status => status === 0)
   }
 
   clearGoals(): void {
@@ -115,6 +131,21 @@ export class IkSolver {
       }
     }
     return out
+  }
+
+  /** Reads the floating base solved by an unlocked-base solver. */
+  getBasePose(): { pos: THREE.Vector3; quat: THREE.Quaternion } {
+    if (this.baseLocked) throw new Error('IkSolver: the floating base is locked')
+    const position = [0, 0, 0]
+    const euler = [0, 0, 0]
+    this.ikRoot.getDoFPosition(position)
+    this.ikRoot.getDoFEuler(euler)
+    return {
+      pos: new THREE.Vector3(position[0], position[1], position[2]),
+      quat: new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(euler[0], euler[1], euler[2], 'ZYX'),
+      ),
+    }
   }
 
   private ensureGoal(linkName: string, withRotation: boolean): Goal {
