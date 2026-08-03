@@ -31,6 +31,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
           <Section title="Keyboard">
             <Item>Up / Down: nudge the selected target by the step size. If a timeline segment is selected, every frame in the segment is nudged; otherwise only the current frame.</Item>
             <Item>Left / Right: move the playhead by the frame step (no target selection needed).</Item>
+            <Item>, / .: select the previous / next Edit Target within the current Joint, Base Position, or Base Orientation block; selection wraps inside that block.</Item>
             <Item>Space: toggle play / pause.</Item>
             <Item>I / O: set the selected segment's start / end to the current playhead frame. With no existing segment, I selects through the final frame and O selects from frame 0. If a new start is after the existing end, the end resets to the final frame.</Item>
             <Item>U: clear the selected segment.</Item>

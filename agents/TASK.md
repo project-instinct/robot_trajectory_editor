@@ -102,6 +102,10 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - When only "I" or "O" key is pressed, the timeline segment will be selected from the start frame to the end of the timeline, or from the start of the timeline to the end frame, respectively.
 
+- When the user press "," or "." key, the "Edit Target" will be moved to the previous or next target, respectively.
+
+    - But do Not move across "Joint", "Base Position", and "Base Orientation" blocks. For example, if the current target is the last joint, pressing "." key will move the target to the first joint, but not to the base position.
+
 ### Implementation Requirements
 
 - The robot state must be stored as a dedicated class, which contains the joint position sequence, base position sequence, and base orientation sequence. The class should provide methods for loading and saving the state to a `.npz` file, as well as methods for updating the state based on user input.

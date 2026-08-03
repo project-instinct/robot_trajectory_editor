@@ -72,6 +72,7 @@ Select a timeline segment, click **Cartesian Interpolate**, choose one or more l
 
 - `Up` / `Down`: nudge the selected Edit Target's value at the current frame by `--nudge-step`
 - `Left` / `Right`: step the current frame backward/forward by `--frame-step` (works with or without an Edit Target selected)
+- `,` / `.`: select the previous/next Edit Target, wrapping within the current Joint, Base Position, or Base Orientation block
 - `Space`: toggle trajectory playback (play/pause)
 - `I` / `O`: set the selected segment's start/end to the current playhead frame (a lone `I` selects to the timeline end; a lone `O` selects from the timeline start; selecting a start after the existing end resets the end to the timeline end)
 - `U`: clear the selected timeline segment

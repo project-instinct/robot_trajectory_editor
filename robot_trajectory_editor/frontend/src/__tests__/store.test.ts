@@ -119,6 +119,34 @@ describe('segment endpoint selection', () => {
   })
 })
 
+describe('cycleSelectedChannel', () => {
+  it('wraps through joints without crossing into base position', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'joint', index: 1 })
+    s().cycleSelectedChannel(1)
+    expect(s().selectedChannel).toEqual({ kind: 'joint', index: 0 })
+
+    s().cycleSelectedChannel(-1)
+    expect(s().selectedChannel).toEqual({ kind: 'joint', index: 1 })
+  })
+
+  it('wraps independently inside both three-axis base blocks', () => {
+    const s = () => useStore.getState()
+    s().setSelectedChannel({ kind: 'basePos', axis: 2 })
+    s().cycleSelectedChannel(1)
+    expect(s().selectedChannel).toEqual({ kind: 'basePos', axis: 0 })
+
+    s().setSelectedChannel({ kind: 'baseQuat', axis: 0 })
+    s().cycleSelectedChannel(-1)
+    expect(s().selectedChannel).toEqual({ kind: 'baseQuat', axis: 2 })
+  })
+
+  it('does nothing when no target is selected', () => {
+    useStore.getState().cycleSelectedChannel(1)
+    expect(useStore.getState().selectedChannel).toBeNull()
+  })
+})
+
 describe('undo', () => {
   it('reverts the latest trajectory edit, including keyframes', () => {
     const s = () => useStore.getState()

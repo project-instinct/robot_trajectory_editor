@@ -28,6 +28,8 @@ export interface StoreState {
   undo: () => void
   setCurrentFrame: (f: number) => void
   setSelectedChannel: (c: ChannelKind | null) => void
+  /** Select the previous/next channel within the current channel block, wrapping at its edges. */
+  cycleSelectedChannel: (direction: 1 | -1) => void
   setSegment: (start: number | null, end: number | null) => void
   /** Set the segment start, preserving a valid end or falling back to the final frame. */
   setSegmentStart: (frame: number) => void
@@ -88,6 +90,21 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   setCurrentFrame: (f) => set({ currentFrame: f }),
   setSelectedChannel: (c) => set({ selectedChannel: c }),
+  cycleSelectedChannel: (direction) => {
+    const { trajectory, selectedChannel } = get()
+    if (!selectedChannel) return
+    const count = selectedChannel.kind === 'joint' ? trajectory.jointCount : 3
+    if (count === 0) return
+    const current = selectedChannel.kind === 'joint'
+      ? selectedChannel.index
+      : selectedChannel.axis
+    const next = (current + direction + count) % count
+    set({
+      selectedChannel: selectedChannel.kind === 'joint'
+        ? { kind: 'joint', index: next }
+        : { kind: selectedChannel.kind, axis: next },
+    })
+  },
   setSegment: (start, end) => set({ segmentStart: start, segmentEnd: end }),
   setSegmentStart: (frame) => {
     const { trajectory, segmentEnd } = get()

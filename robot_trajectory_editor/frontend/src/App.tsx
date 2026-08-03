@@ -129,6 +129,23 @@ function App() {
           return
         }
       }
+      // A select keeps focus after choosing an Edit Target, so handle target
+      // cycling before the general form-control guard. Do not intercept comma
+      // or decimal entry in text/number inputs.
+      const keyTarget = e.target as HTMLElement | null
+      const enteringText = keyTarget && (
+        ['INPUT', 'TEXTAREA'].includes(keyTarget.tagName) || keyTarget.isContentEditable
+      )
+      if (!enteringText && !e.ctrlKey && !e.metaKey && !e.altKey && (
+        e.key === ',' || e.key === '.'
+      )) {
+        const s = useStore.getState()
+        if (s.selectedChannel) {
+          e.preventDefault()
+          s.cycleSelectedChannel(e.key === '.' ? 1 : -1)
+          return
+        }
+      }
       // Let form controls keep their other native key behavior (typing, Up/Down).
       const target = e.target as HTMLElement | null
       const editingText = target && (
