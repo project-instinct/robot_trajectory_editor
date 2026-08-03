@@ -74,6 +74,12 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - All cooresponding state (either joint position or base position/orientation) will be updated in the timeline and the robot state panel.
 
+    - "Single-click" on the robot body will select the link to be moved.
+
+        - A 6Dof gizmo will be displayed on the selected link, allowing the user to move and rotate the link in 3D space.
+
+        - Another single-click on the same robot body will deselect the link and hide the gizmo.
+
     - If the robot double-clicked any body link, the editor should make that link fixed in the world coordinate system, and the user can drag the robot to change its base position and orientation. The joint positions will be updated accordingly.
 
         - An alert message should be displayed on the top of the main window to inform the user that the link is fixed in the world coordinate system.

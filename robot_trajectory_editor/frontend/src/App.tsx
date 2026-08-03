@@ -105,6 +105,7 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (viewportInstance.current?.dragController.clearSelectedLink()) return
         if (useStore.getState().pinnedLinks.length > 0) clearPinnedLinks()
         else setSegment(null, null)
         return
