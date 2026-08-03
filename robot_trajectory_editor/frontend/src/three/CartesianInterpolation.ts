@@ -1,9 +1,20 @@
 import * as THREE from 'three'
 import { Trajectory } from '../state/Trajectory'
-import { IkSolver } from './IkSolver'
+import {
+  CARTESIAN_ORIENTATION_TOLERANCE,
+  CARTESIAN_POSITION_TOLERANCE,
+  IkSolver,
+  type IkGoalTarget,
+} from './IkSolver'
 import type { RobotModel } from './RobotModel'
 
 export type CartesianInterpolationMethod = 'linear' | 'cubic'
+export type CartesianLinkConstraint = 'position' | 'pose'
+
+export interface CartesianLinkSelection {
+  linkName: string
+  constraint: CartesianLinkConstraint
+}
 
 export type CartesianInterpolationResult =
   | {
@@ -19,31 +30,36 @@ interface LinkPose {
   quat: THREE.Quaternion
 }
 
+interface RobotConfiguration extends LinkPose {
+  joints: Map<string, number>
+}
+
+const SOLVE_STATUS_NAMES = ['converged', 'stalled', 'diverged', 'timed out']
+const ADAPTIVE_SUBSTEPS = 8
+
 export function interpolationAlpha(t: number, method: CartesianInterpolationMethod): number {
   return method === 'cubic' ? t * t * (3 - 2 * t) : t
 }
 
-function frameBase(trajectory: Trajectory, frame: number): LinkPose {
-  const state = trajectory.getFrame(frame)
-  return {
-    pos: new THREE.Vector3(state.basePoseW[0], state.basePoseW[1], state.basePoseW[2]),
-    quat: new THREE.Quaternion(
-      state.baseQuatW[1], state.baseQuatW[2], state.baseQuatW[3], state.baseQuatW[0],
-    ),
-  }
-}
-
-function frameJointMap(
+function frameConfiguration(
   trajectory: Trajectory,
   robot: RobotModel,
   frame: number,
-): Map<string, number> {
+): RobotConfiguration {
   const state = trajectory.getFrame(frame)
-  const values = new Map<string, number>()
+  const joints = new Map<string, number>()
   for (const [name, binding] of robot.jointMap) {
-    values.set(name, state.jointPos[binding.index] ?? 0)
+    joints.set(name, state.jointPos[binding.index] ?? 0)
   }
-  return values
+  return {
+    pos: new THREE.Vector3(
+      state.basePoseW[0], state.basePoseW[1], state.basePoseW[2],
+    ),
+    quat: new THREE.Quaternion(
+      state.baseQuatW[1], state.baseQuatW[2], state.baseQuatW[3], state.baseQuatW[0],
+    ),
+    joints,
+  }
 }
 
 function readLinkPoses(robot: RobotModel, linkNames: string[]): Map<string, LinkPose> | null {
@@ -56,6 +72,145 @@ function readLinkPoses(robot: RobotModel, linkNames: string[]): Map<string, Link
   return poses
 }
 
+function makeTargets(
+  linkSelections: CartesianLinkSelection[],
+  startPoses: ReadonlyMap<string, LinkPose>,
+  endPoses: ReadonlyMap<string, LinkPose>,
+  alpha: number,
+): Map<string, IkGoalTarget> {
+  const targets = new Map<string, IkGoalTarget>()
+  for (const { linkName, constraint } of linkSelections) {
+    const first = startPoses.get(linkName)!
+    const last = endPoses.get(linkName)!
+    targets.set(linkName, {
+      pos: first.pos.clone().lerp(last.pos, alpha),
+      quat: constraint === 'pose' ? first.quat.clone().slerp(last.quat, alpha) : undefined,
+    })
+  }
+  return targets
+}
+
+function solveConverged(statuses: number[]): boolean {
+  return statuses.length > 0 && statuses.every(status => status === 0)
+}
+
+function solveStatusSummary(statuses: number[]): string {
+  const names = [...new Set(statuses.map(status => SOLVE_STATUS_NAMES[status] ?? `status ${status}`))]
+  return names.join(', ')
+}
+
+function targetsSatisfied(
+  solver: IkSolver,
+  targets: ReadonlyMap<string, IkGoalTarget>,
+): boolean {
+  for (const [linkName, target] of targets) {
+    const actual = solver.getLinkWorldPose(linkName)
+    if (!actual) return false
+    if (actual.pos.distanceTo(target.pos) > CARTESIAN_POSITION_TOLERANCE) return false
+    if (
+      target.quat
+      && actual.quat.angleTo(target.quat) > CARTESIAN_ORIENTATION_TOLERANCE
+    ) return false
+  }
+  return true
+}
+
+function rounded(value: number): number {
+  return Number(value.toFixed(6))
+}
+
+function vectorValues(value: THREE.Vector3): number[] {
+  return [rounded(value.x), rounded(value.y), rounded(value.z)]
+}
+
+function quaternionValues(value: THREE.Quaternion): number[] {
+  return [rounded(value.x), rounded(value.y), rounded(value.z), rounded(value.w)]
+}
+
+function jointValues(values: ReadonlyMap<string, number>): Record<string, number> {
+  return Object.fromEntries([...values].map(([name, value]) => [name, rounded(value)]))
+}
+
+function linkResiduals(
+  solver: IkSolver,
+  linkSelections: CartesianLinkSelection[],
+  targets: ReadonlyMap<string, IkGoalTarget>,
+) {
+  return linkSelections.map(({ linkName, constraint }) => {
+    const target = targets.get(linkName)!
+    const actual = solver.getLinkWorldPose(linkName)
+    return {
+      link: linkName,
+      constraint,
+      targetPosition: vectorValues(target.pos),
+      actualPosition: actual ? vectorValues(actual.pos) : null,
+      positionErrorMeters: actual ? rounded(actual.pos.distanceTo(target.pos)) : null,
+      targetQuaternionXyzw: target.quat ? quaternionValues(target.quat) : null,
+      actualQuaternionXyzw: actual ? quaternionValues(actual.quat) : null,
+      orientationErrorDegrees: actual && target.quat
+        ? rounded(THREE.MathUtils.radToDeg(actual.quat.angleTo(target.quat)))
+        : null,
+    }
+  })
+}
+
+function logIkFailure(args: {
+  solver: IkSolver
+  frame: number
+  adaptiveStep: number
+  segmentStart: number
+  segmentEnd: number
+  method: CartesianInterpolationMethod
+  linkSelections: CartesianLinkSelection[]
+  pathT: number
+  alpha: number
+  directStatuses: number[]
+  adaptiveStatuses: number[]
+  seed: RobotConfiguration
+  seedResiduals: ReturnType<typeof linkResiduals>
+  targets: ReadonlyMap<string, IkGoalTarget>
+}): void {
+  const solvedBase = args.solver.getBasePose()
+  const solvedJoints = args.solver.getJointValues()
+  let maxJointDelta = { name: '', radians: 0 }
+  for (const [name, value] of solvedJoints) {
+    const delta = Math.abs(value - (args.seed.joints.get(name) ?? value))
+    if (delta > maxJointDelta.radians) maxJointDelta = { name, radians: delta }
+  }
+  const report = {
+    frame: args.frame,
+    adaptiveStep: `${args.adaptiveStep}/${ADAPTIVE_SUBSTEPS}`,
+    segment: [args.segmentStart, args.segmentEnd],
+    method: args.method,
+    links: args.linkSelections,
+    normalizedTime: rounded(args.pathT),
+    interpolationAlpha: rounded(args.alpha),
+    directStatuses: args.directStatuses.map(status => SOLVE_STATUS_NAMES[status] ?? status),
+    adaptiveStatuses: args.adaptiveStatuses.map(status => SOLVE_STATUS_NAMES[status] ?? status),
+    seed: {
+      basePosition: vectorValues(args.seed.pos),
+      baseQuaternionXyzw: quaternionValues(args.seed.quat),
+      joints: jointValues(args.seed.joints),
+    },
+    seedResiduals: args.seedResiduals,
+    solved: {
+      basePosition: vectorValues(solvedBase.pos),
+      baseQuaternionXyzw: quaternionValues(solvedBase.quat),
+      basePositionDeltaMeters: rounded(solvedBase.pos.distanceTo(args.seed.pos)),
+      baseOrientationDeltaDegrees: rounded(
+        THREE.MathUtils.radToDeg(solvedBase.quat.angleTo(args.seed.quat)),
+      ),
+      maxJointDelta: {
+        name: maxJointDelta.name,
+        radians: rounded(maxJointDelta.radians),
+      },
+      joints: jointValues(solvedJoints),
+    },
+    residuals: linkResiduals(args.solver, args.linkSelections, args.targets),
+  }
+  console.error('[Cartesian IK diagnostics]\n' + JSON.stringify(report, null, 2))
+}
+
 /**
  * Computes Cartesian interpolation against a clone and returns only candidate
  * joint data. The caller owns committing it, so any failure is transactional.
@@ -63,7 +218,7 @@ function readLinkPoses(robot: RobotModel, linkNames: string[]): Map<string, Link
 export function computeCartesianInterpolation(
   trajectory: Trajectory,
   robot: RobotModel,
-  linkNames: string[],
+  linkSelections: CartesianLinkSelection[],
   segmentStart: number,
   segmentEnd: number,
   method: CartesianInterpolationMethod,
@@ -72,7 +227,8 @@ export function computeCartesianInterpolation(
   const start = Math.min(segmentStart, segmentEnd)
   const end = Math.max(segmentStart, segmentEnd)
   if (start === end) return { ok: false, message: 'Select a segment spanning at least two frames.' }
-  if (linkNames.length === 0) return { ok: false, message: 'Select at least one link.' }
+  if (linkSelections.length === 0) return { ok: false, message: 'Select at least one link.' }
+  const linkNames = linkSelections.map(selection => selection.linkName)
 
   const candidate = trajectory.clone()
   const restore = trajectory.getFrame(restoreFrame)
@@ -102,21 +258,50 @@ export function computeCartesianInterpolation(
     for (let frame = start + 1; frame < end; frame++) {
       const t = (frame - start) / (end - start)
       const alpha = interpolationAlpha(t, method)
-      const targets = new Map<string, LinkPose>()
-      for (const linkName of linkNames) {
-        const first = startPoses.get(linkName)!
-        const last = endPoses.get(linkName)!
-        targets.set(linkName, {
-          pos: first.pos.clone().lerp(last.pos, alpha),
-          quat: first.quat.clone().slerp(last.quat, alpha),
-        })
-      }
+      const targets = makeTargets(linkSelections, startPoses, endPoses, alpha)
 
-      const seedFrame = frame - 1
-      const base = frameBase(candidate, seedFrame)
-      solver.setConfiguration(base.pos, base.quat, frameJointMap(candidate, robot, seedFrame))
-      if (!solver.solvePoseGoals(targets)) {
-        return { ok: false, message: `IK failed to converge at frame ${frame}. No changes were applied.` }
+      // Forward continuation: the first interior frame starts from the selected
+      // start state; every subsequent frame starts from the previous IK result.
+      const seed = frameConfiguration(candidate, robot, frame - 1)
+      solver.setConfiguration(seed.pos, seed.quat, seed.joints)
+      let statuses = targetsSatisfied(solver, targets) ? [0] : solver.solveGoals(targets)
+      if (targetsSatisfied(solver, targets)) statuses = [0]
+      if (!solveConverged(statuses)) {
+        const directStatuses = statuses
+        // Retry through smaller hidden Cartesian increments. Reset first so a
+        // diverged direct attempt cannot contaminate the continuation path.
+        solver.setConfiguration(seed.pos, seed.quat, seed.joints)
+        for (let step = 1; step <= ADAPTIVE_SUBSTEPS; step++) {
+          const subframeT = ((frame - 1 - start) + step / ADAPTIVE_SUBSTEPS) / (end - start)
+          const subAlpha = interpolationAlpha(subframeT, method)
+          const subTargets = makeTargets(linkSelections, startPoses, endPoses, subAlpha)
+          const seedResiduals = linkResiduals(solver, linkSelections, subTargets)
+          statuses = targetsSatisfied(solver, subTargets) ? [0] : solver.solveGoals(subTargets)
+          if (targetsSatisfied(solver, subTargets)) statuses = [0]
+          if (!solveConverged(statuses)) {
+            logIkFailure({
+              solver,
+              frame,
+              adaptiveStep: step,
+              segmentStart: start,
+              segmentEnd: end,
+              method,
+              linkSelections,
+              pathT: subframeT,
+              alpha: subAlpha,
+              directStatuses,
+              adaptiveStatuses: statuses,
+              seed,
+              seedResiduals,
+              targets: subTargets,
+            })
+            const status = solveStatusSummary(statuses)
+            return {
+              ok: false,
+              message: `IK ${status} at frame ${frame} (adaptive step ${step}/${ADAPTIVE_SUBSTEPS}). No changes were applied. See the browser console for [Cartesian IK diagnostics].`,
+            }
+          }
+        }
       }
 
       const solvedBase = solver.getBasePose()

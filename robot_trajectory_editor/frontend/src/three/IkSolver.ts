@@ -19,6 +19,41 @@ const DOF_EX = 3 as DOF
 const DOF_EY = 4 as DOF
 const DOF_EZ = 5 as DOF
 
+export const CARTESIAN_POSITION_TOLERANCE = 4e-3
+export const CARTESIAN_ORIENTATION_TOLERANCE = THREE.MathUtils.degToRad(0.1)
+
+export interface IkGoalTarget {
+  pos: THREE.Vector3
+  /** Omit rotation for a position-only goal. */
+  quat?: THREE.Quaternion
+}
+
+interface MutableUrdfJoint extends THREE.Object3D {
+  jointValue: number[]
+  setJointValue: (...values: number[]) => boolean
+}
+
+/**
+ * urdfRobotToIKRoot copies each URDFJoint's current Object3D transform. Since
+ * urdf-loader stores the current joint motion in that transform, converting a
+ * posed robot would bake the pose into the fixed origin and then apply the DoF
+ * value a second time. Build from zero joint values and restore the visible
+ * robot synchronously after conversion.
+ */
+function makeNeutralIkRoot(urdfRobot: URDFRobot): Joint {
+  const joints = Object.values(
+    (urdfRobot as unknown as { joints?: Record<string, MutableUrdfJoint> }).joints ?? {},
+  )
+  const savedValues = joints.map(joint => [...joint.jointValue])
+  try {
+    joints.forEach(joint => joint.setJointValue(...joint.jointValue.map(() => 0)))
+    return urdfRobotToIKRoot(urdfRobot, false) as unknown as Joint
+  } finally {
+    joints.forEach((joint, index) => joint.setJointValue(...savedValues[index]))
+    urdfRobot.updateMatrixWorld(true)
+  }
+}
+
 /**
  * IK over the URDF kinematic tree using closed-chain-ik.
  *
@@ -44,7 +79,7 @@ export class IkSolver {
   constructor(urdfRobot: URDFRobot, options: { lockBase?: boolean } = {}) {
     // Keep all links (trimUnused=false) so hands/head remain valid IK targets.
     // (d.ts declares a Link return, but for a URDFRobot it returns the root Joint.)
-    this.ikRoot = urdfRobotToIKRoot(urdfRobot, false) as unknown as Joint
+    this.ikRoot = makeNeutralIkRoot(urdfRobot)
     this.baseLocked = options.lockBase ?? true
     // Viewport dragging keeps the trajectory-driven base locked. Cartesian
     // interpolation can opt into solving all six floating-base DoFs.
@@ -61,14 +96,50 @@ export class IkSolver {
     })
 
     this.solver = new Solver([this.ikRoot])
-    this.solver.maxIterations = 50
-    this.solver.translationConvergeThreshold = 1e-3
-    this.solver.rotationConvergeThreshold = 1e-4
+    if (this.baseLocked) {
+      this.solver.maxIterations = 50
+      this.solver.translationConvergeThreshold = 1e-3
+      this.solver.rotationConvergeThreshold = 1e-4
+    } else {
+      // Multi-link floating-base goals are often square or nearly singular.
+      // Stronger damping prevents the normal-equation solve from overshooting
+      // and falsely reporting divergence on small continuation steps.
+      this.solver.maxIterations = 100
+      this.solver.translationConvergeThreshold = CARTESIAN_POSITION_TOLERANCE
+      this.solver.rotationConvergeThreshold = CARTESIAN_ORIENTATION_TOLERANCE
+      // The damped normal-equation path amplifies nearly singular directions
+      // in straight-limb poses. SVD drops those directions instead of turning
+      // millimetre-scale goals into radian-scale joint changes.
+      this.solver.useSVD = true
+      this.solver.stallThreshold = 1e-7
+      this.solver.dampingFactor = 0.05
+      this.solver.divergeThreshold = 0.1
+      this.solver.restPoseFactor = 0.05
+      this.solver.translationErrorClamp = 0.02
+      this.solver.rotationErrorClamp = 0.02
+    }
     this.solver.updateStructure()
   }
 
   hasLink(linkName: string): boolean {
     return this.ikLinks.has(linkName)
+  }
+
+  /** Reads a link pose directly from the IK tree for residual diagnostics. */
+  getLinkWorldPose(linkName: string): { pos: THREE.Vector3; quat: THREE.Quaternion } | null {
+    const link = this.ikLinks.get(linkName)
+    if (!link) return null
+    this.ikRoot.updateMatrixWorld()
+    const position = [0, 0, 0]
+    const quaternion = [0, 0, 0, 1]
+    link.getWorldPosition(position)
+    link.getWorldQuaternion(quaternion)
+    return {
+      pos: new THREE.Vector3(position[0], position[1], position[2]),
+      quat: new THREE.Quaternion(
+        quaternion[0], quaternion[1], quaternion[2], quaternion[3],
+      ).normalize(),
+    }
   }
 
   /** Sets the base pose (xyz + wxyz) and joint values the solve starts from. */
@@ -77,18 +148,28 @@ export class IkSolver {
       this.ikRoot.setPosition(basePos.x, basePos.y, basePos.z)
       this.ikRoot.setQuaternion(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w)
     } else {
-      this.ikRoot.setDoFValue(DOF_X, basePos.x)
-      this.ikRoot.setDoFValue(DOF_Y, basePos.y)
-      this.ikRoot.setDoFValue(DOF_Z, basePos.z)
+      // closed-chain-ik composes its EX/EY/EZ values with gl-matrix's
+      // quat.fromEuler, whose installed default intrinsic order is ZYX.
       const euler = new THREE.Euler().setFromQuaternion(baseQuat, 'ZYX')
-      this.ikRoot.setDoFValue(DOF_EX, euler.x)
-      this.ikRoot.setDoFValue(DOF_EY, euler.y)
-      this.ikRoot.setDoFValue(DOF_EZ, euler.z)
+      const baseValues: [DOF, number][] = [
+        [DOF_X, basePos.x], [DOF_Y, basePos.y], [DOF_Z, basePos.z],
+        [DOF_EX, euler.x], [DOF_EY, euler.y], [DOF_EZ, euler.z],
+      ]
+      for (const [dof, value] of baseValues) {
+        this.ikRoot.setDoFValue(dof, value)
+        this.ikRoot.setRestPoseValue(dof, value)
+      }
+      this.ikRoot.restPoseSet = true
     }
     for (const [name, value] of jointValues) {
       const joint = this.ikJoints.get(name)
       if (joint && joint.dof.length > 0) {
-        joint.setDoFValue(joint.dof[0] as unknown as DOF, value)
+        const dof = joint.dof[0] as unknown as DOF
+        joint.setDoFValue(dof, value)
+        if (!this.baseLocked) {
+          joint.setRestPoseValue(dof, value)
+          joint.restPoseSet = true
+        }
       }
     }
     this.ikRoot.setMatrixWorldNeedsUpdate()
@@ -103,19 +184,24 @@ export class IkSolver {
     this.solver.solve()
   }
 
-  /** Full-pose goals solved together, used for one or more pinned links. */
-  solvePoseGoals(targets: ReadonlyMap<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>): boolean {
-    this.keepGoalKeys([...targets.keys()].map(name => `${name}|pose`))
+  /** Mixed position-only and full-pose goals solved together. */
+  solveGoals(targets: ReadonlyMap<string, IkGoalTarget>): number[] {
+    this.keepGoalKeys([...targets].map(([name, target]) => `${name}|${target.quat ? 'pose' : 'pos'}`))
     for (const [linkName, target] of targets) {
-      const goal = this.ensureGoal(linkName, true)
+      const goal = this.ensureGoal(linkName, Boolean(target.quat))
       goal.setPosition(target.pos.x, target.pos.y, target.pos.z)
-      goal.setQuaternion(target.quat.x, target.quat.y, target.quat.z, target.quat.w)
+      if (target.quat) {
+        goal.setQuaternion(target.quat.x, target.quat.y, target.quat.z, target.quat.w)
+      }
       goal.setMatrixNeedsUpdate()
     }
-    const statuses = this.solver.solve()
-    // SOLVE_STATUS.CONVERGED is 0. Avoid importing the package's ambient const
-    // enum at runtime (the same reason the DoF values above are mirrored).
-    return statuses.length > 0 && statuses.every(status => status === 0)
+    // Avoid exporting the package's ambient const enum through this wrapper.
+    return this.solver.solve().map(Number)
+  }
+
+  /** Full-pose convenience wrapper used by pinned-link dragging. */
+  solvePoseGoals(targets: ReadonlyMap<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>): number[] {
+    return this.solveGoals(targets)
   }
 
   clearGoals(): void {

@@ -66,7 +66,7 @@ cd robot_trajectory_editor/frontend && npm test
 
 ## Cartesian Interpolation
 
-Select a timeline segment, click **Cartesian Interpolate**, choose one or more links and a linear or cubic method, then click **Apply**. Link positions and orientations are interpolated in world space and solved back to the floating-base pose and joint positions with IK. The edit is transactional: if IK fails on any frame, the trajectory remains unchanged.
+Select a timeline segment, click **Cartesian Interpolate**, choose one or more links, select a position-only or position-and-orientation constraint for each, and choose a linear or cubic method. Link targets are interpolated in world space and solved back to the floating-base pose and joint positions with IK. For jumps, full torso pose plus position-only ankle targets avoids overconstraining straight legs. The edit is transactional: if IK fails on any frame, the trajectory remains unchanged.
 
 ## Keyboard Shortcuts
 

@@ -4,6 +4,7 @@ import { getViewport } from '../three/viewportContext'
 import {
   computeCartesianInterpolation,
   type CartesianInterpolationMethod,
+  type CartesianLinkConstraint,
 } from '../three/CartesianInterpolation'
 
 interface CartesianInterpolateModalProps {
@@ -16,6 +17,7 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
     [],
   )
   const [selectedLinks, setSelectedLinks] = useState<string[]>([])
+  const [constraints, setConstraints] = useState<Record<string, CartesianLinkConstraint>>({})
   const [method, setMethod] = useState<CartesianInterpolationMethod>('linear')
   const [warning, setWarning] = useState('')
 
@@ -40,7 +42,10 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
     const result = computeCartesianInterpolation(
       store.trajectory,
       robot,
-      selectedLinks,
+      selectedLinks.map(linkName => ({
+        linkName,
+        constraint: constraints[linkName] ?? 'pose',
+      })),
       store.segmentStart,
       store.segmentEnd,
       method,
@@ -74,14 +79,27 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
           <h4>Links</h4>
           <div style={linkListStyle}>
             {linkNames.map(linkName => (
-              <label key={linkName} style={linkStyle}>
-                <input
-                  type="checkbox"
-                  checked={selectedLinks.includes(linkName)}
-                  onChange={() => toggleLink(linkName)}
-                />
-                <span>{linkName}</span>
-              </label>
+              <div key={linkName} style={linkStyle}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedLinks.includes(linkName)}
+                    onChange={() => toggleLink(linkName)}
+                  />
+                  <span>{linkName}</span>
+                </label>
+                <select
+                  value={constraints[linkName] ?? 'pose'}
+                  disabled={!selectedLinks.includes(linkName)}
+                  onChange={event => setConstraints(current => ({
+                    ...current,
+                    [linkName]: event.target.value as CartesianLinkConstraint,
+                  }))}
+                >
+                  <option value="pose">Position + orientation</option>
+                  <option value="position">Position only</option>
+                </select>
+              </div>
             ))}
             {linkNames.length === 0 && <span style={{ color: '#f88' }}>No IK target links are available.</span>}
           </div>
