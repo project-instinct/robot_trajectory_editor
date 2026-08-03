@@ -51,6 +51,14 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
 
+    - Double-clicking the timeline adds a keyframe anchor at the clicked frame.
+
+    - Dragging a keyframe anchor horizontally moves it to another frame, when the entire 3D visualizer scene, frame cursor should also be updated. Dragging it vertically changes the selected `Edit Target` value at that keyframe.
+
+    - Right-clicking a keyframe anchor removes it.
+
+    - Smoothing preserves the exact values of keyframe anchors.
+
 - Using "Shift" + mouse-drag to select a segment of the timeline. The selected segment will be highlighted in the timeline.
 
     - If a timeline segment is selected, "Up" or "Down" arrow key will move the value of the selected target up or down by a small step for all frames in the selected segment.

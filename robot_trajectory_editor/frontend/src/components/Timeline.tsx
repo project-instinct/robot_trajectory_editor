@@ -56,6 +56,7 @@ export function Timeline() {
       beginTrajectoryEdit()
       const startValue = selectedChannel ? trajectory.getChannelValue(kf, selectedChannel) : 0
       dragRef.current = { type: 'keyframe', startClientY: e.clientY, startValue, curFrame: kf }
+      setCurrentFrame(kf)
       return
     }
     if (e.shiftKey) {
@@ -104,6 +105,7 @@ export function Timeline() {
         trajectory.removeKeyframe(drag.curFrame)
         trajectory.insertKeyframe(newFrame)
         drag.curFrame = newFrame
+        store.setCurrentFrame(newFrame)
         store.touchTrajectory()
       }
       const channel = store.selectedChannel

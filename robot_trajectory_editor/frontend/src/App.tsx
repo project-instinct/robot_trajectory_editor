@@ -117,7 +117,19 @@ function App() {
         }
         return
       }
-      // Let form controls keep their native key behavior (typing, slider arrows).
+      // Timeline stepping always takes precedence over a focused form control.
+      // In particular, prevent range inputs from consuming Left/Right.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (
+        e.key === 'ArrowLeft' || e.key === 'ArrowRight'
+      )) {
+        const s = useStore.getState()
+        if (s.trajectory.frameCount > 0) {
+          e.preventDefault()
+          s.stepFrame(e.key === 'ArrowRight' ? 1 : -1)
+          return
+        }
+      }
+      // Let form controls keep their other native key behavior (typing, Up/Down).
       const target = e.target as HTMLElement | null
       const editingText = target && (
         ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) || target.isContentEditable
@@ -134,10 +146,6 @@ function App() {
         if (!s.selectedChannel || s.trajectory.frameCount === 0) return
         e.preventDefault()
         s.nudgeSelectedChannel(e.key === 'ArrowUp' ? 1 : -1)
-      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (s.trajectory.frameCount === 0) return
-        e.preventDefault()
-        s.stepFrame(e.key === 'ArrowRight' ? 1 : -1)
       } else if (e.key === ' ') {
         if (s.trajectory.frameCount === 0) return
         e.preventDefault()
