@@ -1,6 +1,15 @@
 # Robot Trajectory Editor
 
-Web-based editor for robot trajectories. Create, edit, and visualize robot joint/pose sequences in 3D.
+Web-based editor for inspecting, repairing, and authoring robot joint and floating-base trajectories directly against a URDF model in 3D.
+
+## Key Features
+
+- **Trajectory I/O and playback**: load and save `.npz` motions, scrub or play them on a URDF robot, and inspect or numerically edit every joint and base channel.
+- **Visual timeline editing**: draw channel values by dragging keyframes, select time segments, and apply fill, smoothing, joint-space interpolation, nudging, and multi-level undo.
+- **Direct 3D manipulation**: drag robot links with IK, translate or rotate the base, and pin multiple links to world-space poses while editing the motion.
+- **Cartesian trajectory interpolation**: interpolate selected link targets linearly or cubically with per-link position-only or full-pose constraints; floating-base IK solves each frame transactionally.
+- **Terrain workflow**: load `.obj` or `.stl` terrain, crop, down-sample, move, rotate, and export the edited mesh as `.obj`.
+- **Keyboard-first navigation**: step frames, mark timeline segments, cycle Edit Targets within their channel groups, nudge values, play, save, and undo without leaving the viewport.
 
 ## Quick Start
 
@@ -45,7 +54,7 @@ cd robot_trajectory_editor/frontend && npm test
 
 - **Backend**: Flask + numpy for `.npz` trajectory I/O and URDF asset serving
 - **Frontend**: React + TypeScript + Vite, Three.js for 3D visualization, zustand for state
-- **IK**: `closed-chain-ik` (damped least squares over the URDF tree), wrapped by `frontend/src/three/IkSolver.ts`; the floating base is always locked and driven by the trajectory
+- **IK**: `closed-chain-ik`, wrapped by `frontend/src/three/IkSolver.ts`; direct manipulation keeps the trajectory-driven base locked, while Cartesian interpolation solves the floating base and joints together
 - **Terrain**: `.obj` and `.stl` load client-side; Save Terrain exports `.obj`
 
 ## Viewport Interaction
