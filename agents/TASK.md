@@ -82,6 +82,12 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - On the right, there is a panel for displaying the current robot state, including joint positions, base position, and base orientation. Users can also manually input values to update the robot state.
 
+    - All three section should have a name, a scroll bar, and a text box for the exact value, for each aspect of the state. The scroll bar and text box should be synchronized, and changing one should update the other.
+
+    - By draging the scroll bar, the user can change the value of the selected target in the current frame. The text box should also be updated accordingly.
+
+    - The size for the text value box and the state name should have enough space to display the entire name and value, and the user should be able to copy the value from the text box.
+
 - In the main 3D window, where the user can click and drag the robot to change its current position and orientation.
 
     - All cooresponding state (either joint position or base position/orientation) will be updated in the timeline and the robot state panel.

@@ -2,6 +2,14 @@ import { useStore } from '../state/store'
 import { useCallback } from 'react'
 import { getViewport } from '../three/viewportContext'
 
+/** Natural euler ranges (radians) matching quatToEuler: roll/yaw wrap to ±π,
+ *  pitch is clamped to ±π/2. */
+const EULER_RANGES: [number, number][] = [
+  [-Math.PI, Math.PI],
+  [-Math.PI / 2, Math.PI / 2],
+  [-Math.PI, Math.PI],
+]
+
 export function StatePanel() {
   const { trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, robotModelLoaded } = useStore()
   const frame = trajectory.getFrame(currentFrame)
@@ -36,6 +44,22 @@ export function StatePanel() {
     touchTrajectory()
   }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory])
 
+  /** Slider range covering the whole base-position sequence on an axis, so the
+   *  current frame's value is always reachable with room to adjust. */
+  const basePosRange = (axis: number): [number, number] => {
+    let lo = Infinity
+    let hi = -Infinity
+    for (let f = 0; f < trajectory.frameCount; f++) {
+      const v = trajectory.basePoseW[f * 3 + axis]
+      if (v < lo) lo = v
+      if (v > hi) hi = v
+    }
+    if (!isFinite(lo)) return [-5, 5]
+    if (lo === hi) { lo -= 1; hi += 1 }
+    const margin = (hi - lo) * 0.2
+    return [lo - margin, hi + margin]
+  }
+
   return (
     <div style={panelStyle}>
       <h3>Robot State</h3>
@@ -49,57 +73,82 @@ export function StatePanel() {
         const limit = robotModel?.getJointLimit(name)
         const lower = limit?.lower ?? -Math.PI
         const upper = limit?.upper ?? Math.PI
+        const step = (upper - lower) / 200 || 0.01
         return (
-          <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <span style={{ flex: 1, minWidth: 60, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+          <div key={i} style={rowStyle}>
+            <span style={jointNameStyle}>{name}</span>
             <input
               type="range"
               min={lower}
               max={upper}
-              step={(upper - lower) / 200 || 0.01}
+              step={step}
               value={frame.jointPos[i]}
               onChange={e => handleJointChange(i, parseFloat(e.target.value))}
-              style={{ flex: 1, minWidth: 60 }}
+              style={sliderStyle}
             />
             <input
               type="number"
               value={frame.jointPos[i]}
               onChange={e => handleJointChange(i, parseFloat(e.target.value))}
-              style={{ width: '80px', fontSize: '11px' }}
+              style={jointValueStyle}
               step={0.01}
             />
           </div>
         )
       })}
       <h4>Base Position (xyz)</h4>
-      {['x', 'y', 'z'].map((label, i) => (
-        <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-          <span style={{ width: '45px', fontSize: '11px' }}>{label}:</span>
-          <input
-            type="number"
-            value={frame.basePoseW[i]}
-            onChange={e => handleBasePosChange(i, parseFloat(e.target.value))}
-            style={{ flex: 1, minWidth: 80, fontSize: '11px' }}
-            step={0.01}
-          />
-        </div>
-      ))}
+      {['x', 'y', 'z'].map((label, i) => {
+        const [lo, hi] = basePosRange(i)
+        return (
+          <div key={i} style={rowStyle}>
+            <span style={nameStyle}>{label}:</span>
+            <input
+              type="range"
+              min={lo}
+              max={hi}
+              step={0.01}
+              value={frame.basePoseW[i]}
+              onChange={e => handleBasePosChange(i, parseFloat(e.target.value))}
+              style={sliderStyle}
+            />
+            <input
+              type="number"
+              value={frame.basePoseW[i]}
+              onChange={e => handleBasePosChange(i, parseFloat(e.target.value))}
+              style={flexValueStyle}
+              step={0.01}
+            />
+          </div>
+        )
+      })}
       <h4>Base Orientation (roll/pitch/yaw)</h4>
       {(() => {
         const [roll, pitch, yaw] = trajectory.getQuatEuler(currentFrame)
         const euler = [roll, pitch, yaw]
-        return ['roll', 'pitch', 'yaw'].map((label, i) => (
-          <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <span style={{ width: '45px', fontSize: '11px' }}>{label}:</span>
-            <input
-              type="number"
-              value={euler[i]}
-              onChange={e => handleBaseQuatChange(i, parseFloat(e.target.value))}
-              style={{ flex: 1, minWidth: 80, fontSize: '11px' }}
-              step={0.01}
-            />
-          </div>
-        ))
+        return ['roll', 'pitch', 'yaw'].map((label, i) => {
+          const [lo, hi] = EULER_RANGES[i]
+          return (
+            <div key={i} style={rowStyle}>
+              <span style={nameStyle}>{label}:</span>
+              <input
+                type="range"
+                min={lo}
+                max={hi}
+                step={0.01}
+                value={euler[i]}
+                onChange={e => handleBaseQuatChange(i, parseFloat(e.target.value))}
+                style={sliderStyle}
+              />
+              <input
+                type="number"
+                value={euler[i]}
+                onChange={e => handleBaseQuatChange(i, parseFloat(e.target.value))}
+                style={flexValueStyle}
+                step={0.01}
+              />
+            </div>
+          )
+        })
       })()}
       </>
       )}
@@ -113,4 +162,41 @@ const panelStyle: React.CSSProperties = {
   overflowY: 'auto',
   scrollbarGutter: 'stable',
   flex: 1,
+}
+
+const rowStyle: React.CSSProperties = {
+  display: 'flex',
+  gap: '4px',
+  alignItems: 'center',
+}
+
+/** Joint name grows with the panel and wraps, so the entire name stays visible. */
+const jointNameStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 60,
+  fontSize: '11px',
+  wordBreak: 'break-word',
+}
+
+const nameStyle: React.CSSProperties = {
+  width: '45px',
+  fontSize: '11px',
+  flexShrink: 0,
+}
+
+const sliderStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 60,
+}
+
+const jointValueStyle: React.CSSProperties = {
+  width: '90px',
+  fontSize: '11px',
+  flexShrink: 0,
+}
+
+const flexValueStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 80,
+  fontSize: '11px',
 }
