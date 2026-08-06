@@ -51,7 +51,7 @@ export function StatePanel() {
         const upper = limit?.upper ?? Math.PI
         return (
           <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <span style={{ width: '60px', fontSize: '11px' }}>{name}</span>
+            <span style={{ flex: 1, minWidth: 60, fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
             <input
               type="range"
               min={lower}
@@ -59,13 +59,13 @@ export function StatePanel() {
               step={(upper - lower) / 200 || 0.01}
               value={frame.jointPos[i]}
               onChange={e => handleJointChange(i, parseFloat(e.target.value))}
-              style={{ flex: 1 }}
+              style={{ flex: 1, minWidth: 60 }}
             />
             <input
               type="number"
               value={frame.jointPos[i]}
               onChange={e => handleJointChange(i, parseFloat(e.target.value))}
-              style={{ width: '60px', fontSize: '11px' }}
+              style={{ width: '80px', fontSize: '11px' }}
               step={0.01}
             />
           </div>
@@ -74,12 +74,12 @@ export function StatePanel() {
       <h4>Base Position (xyz)</h4>
       {['x', 'y', 'z'].map((label, i) => (
         <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-          <span>{label}:</span>
+          <span style={{ width: '45px', fontSize: '11px' }}>{label}:</span>
           <input
             type="number"
             value={frame.basePoseW[i]}
             onChange={e => handleBasePosChange(i, parseFloat(e.target.value))}
-            style={{ width: '80px', fontSize: '11px' }}
+            style={{ flex: 1, minWidth: 80, fontSize: '11px' }}
             step={0.01}
           />
         </div>
@@ -90,12 +90,12 @@ export function StatePanel() {
         const euler = [roll, pitch, yaw]
         return ['roll', 'pitch', 'yaw'].map((label, i) => (
           <div key={i} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <span>{label}:</span>
+            <span style={{ width: '45px', fontSize: '11px' }}>{label}:</span>
             <input
               type="number"
               value={euler[i]}
               onChange={e => handleBaseQuatChange(i, parseFloat(e.target.value))}
-              style={{ width: '80px', fontSize: '11px' }}
+              style={{ flex: 1, minWidth: 80, fontSize: '11px' }}
               step={0.01}
             />
           </div>
@@ -109,6 +109,8 @@ export function StatePanel() {
 
 const panelStyle: React.CSSProperties = {
   padding: '8px',
+  overflowX: 'hidden',
   overflowY: 'auto',
+  scrollbarGutter: 'stable',
   flex: 1,
 }

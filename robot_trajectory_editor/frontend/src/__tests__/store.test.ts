@@ -28,6 +28,9 @@ beforeEach(() => {
     pinnedLinks: [],
     nudgeStep: 0.01,
     frameStep: 1,
+    baseTransform: null,
+    baseTransformSource: null,
+    baseTransformOrigin: null,
   })
 })
 
@@ -332,5 +335,73 @@ describe('nudgeSelectedChannel', () => {
     s().setTrajectory(Trajectory.empty())
     s().nudgeSelectedChannel(1)
     expect(s().trajectoryVersion).toBe(0)
+  })
+})
+
+describe('base transform', () => {
+  it('transforms the whole base sequence live and a single undo reverts the session', () => {
+    const s = () => useStore.getState()
+    s().setBaseTransform({ tx: 1, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+
+    // every frame moved by the slider offset; joints untouched
+    for (let f = 0; f < 10; f++) {
+      expect(s().trajectory.getChannelValue(f, { kind: 'basePos', axis: 0 })).toBeCloseTo(1)
+    }
+    expect(s().trajectory.getChannelValue(3, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+    expect(s().undoStack).toHaveLength(1)
+    expect(s().trajectoryVersion).toBe(1)
+
+    s().undo()
+    expect(s().trajectory.getChannelValue(0, { kind: 'basePos', axis: 0 })).toBeCloseTo(0)
+    expect(s().baseTransform).toBeNull()
+    expect(s().baseTransformSource).toBeNull()
+  })
+
+  it('recomputes from the session source so slider values are absolute offsets', () => {
+    const s = () => useStore.getState()
+    s().setBaseTransform({ tx: 1, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+    s().setBaseTransform({ tx: 0, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+    // dragging the slider back to 0 restores the original state exactly
+    expect(s().trajectory.getChannelValue(0, { kind: 'basePos', axis: 0 })).toBeCloseTo(0)
+    expect(s().undoStack).toHaveLength(1)
+  })
+
+  it('applying ends the session and a later adjustment becomes a fresh undo step', () => {
+    const s = () => useStore.getState()
+    s().setBaseTransform({ tx: 1, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+    s().applyBaseTransform()
+    expect(s().baseTransform).toBeNull()
+    expect(s().undoStack).toHaveLength(1)
+
+    s().setBaseTransform({ tx: 0.5, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+    expect(s().undoStack).toHaveLength(2)
+    // the slider offset is relative to this new session's start (already at +1)
+    expect(s().trajectory.getChannelValue(0, { kind: 'basePos', axis: 0 })).toBeCloseTo(1.5)
+
+    s().undo()
+    expect(s().trajectory.getChannelValue(0, { kind: 'basePos', axis: 0 })).toBeCloseTo(1)
+  })
+
+  it('rotates the trajectory as a rigid body about the session start', () => {
+    const s = () => useStore.getState()
+    // frame 0 base is (0,0,1); yaw 90 deg about it keeps it fixed
+    s().setBaseTransform({ tx: 0, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: Math.PI / 2 })
+    const frame0 = s().trajectory.getFrame(0)
+    expect(frame0.basePoseW[0]).toBeCloseTo(0)
+    expect(frame0.basePoseW[1]).toBeCloseTo(0)
+    expect(frame0.basePoseW[2]).toBeCloseTo(1)
+    const q = frame0.baseQuatW
+    expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1)
+  })
+
+  it('is a no-op on an empty trajectory and apply without a session does nothing', () => {
+    const s = () => useStore.getState()
+    s().setTrajectory(Trajectory.empty())
+    s().setBaseTransform({ tx: 1, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 })
+    expect(s().undoStack).toHaveLength(0)
+    expect(s().trajectoryVersion).toBe(0)
+
+    s().applyBaseTransform()
+    expect(s().baseTransform).toBeNull()
   })
 })

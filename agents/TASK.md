@@ -41,6 +41,14 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - On the left, there is a panel for selecting critical robot state target, such as joint name (for joint position), base position, and base orientation.
 
+- On the left, there is a panel for adjusting the x-y-z coordinate of the entire trajectory, but only about the robot base psition and orientation.
+
+    - The panel is called "Whole Trajectory Transform", and it contains 6 scroll bars for adjusting the "x", "y", "z", "roll", "pitch", and "yaw" of the entire trajectory.
+
+    - When user adjust the scroll bar (as well as the text box) on "x", "y", "z", "roll", "pitch", or "yaw", before clicking the apply, the entire trajectory should be tranformed acordingly. And the user should also see the update in the main 3D window and in the timeline.
+
+    - The operation should be revertable with a single "Ctrl + Z" key press.
+
 - On the left, there is a block below the "Edit Target" block for special operation buttons, such as "Fill", "Smooth", "Play", "Pause".
 
     - "Fill": Automatically fills the selected `Edit Target` channel with its value at the current frame when clicked. If a segment of the timeline is selected, only that segment of the channel will be filled. If no segment is selected, the entire channel will be filled. All other channels are left unchanged.

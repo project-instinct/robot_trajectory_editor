@@ -240,4 +240,87 @@ describe('Trajectory', () => {
     t.removeKeyframe(2)
     expect(t.hasKeyframe(2)).toBe(false)
   })
+
+  it('should translate the whole base sequence without touching joints or keyframes', () => {
+    const t = makeTrajectory(5, 2)
+    t.insertKeyframe(3)
+    const jointsBefore = Array.from(t.jointPos)
+    const quatsBefore = Array.from(t.baseQuatW)
+
+    t.transformBase(1, -0.5, 2, 0, 0, 0, [0, 0, 1])
+
+    for (let f = 0; f < 5; f++) {
+      expect(t.basePoseW[f * 3]).toBeCloseTo(f * 0.01 + 1)
+      expect(t.basePoseW[f * 3 + 1]).toBeCloseTo(-0.5)
+      expect(t.basePoseW[f * 3 + 2]).toBeCloseTo(3)
+    }
+    // identity rotation leaves the orientations intact
+    expect(Array.from(t.baseQuatW)).toEqual(quatsBefore)
+    // joints and keyframes are untouched
+    expect(Array.from(t.jointPos)).toEqual(jointsBefore)
+    expect(t.hasKeyframe(3)).toBe(true)
+  })
+
+  it('should rotate positions about the origin and premultiply orientations', () => {
+    const t = makeTrajectory(3, 1)
+    t.setBasePose(0, [1, 0, 0], [1, 0, 0, 0])
+    t.setBasePose(1, [2, 0, 0], [1, 0, 0, 0])
+    t.setBasePose(2, [0, 2, 0], [1, 0, 0, 0])
+
+    // yaw by 90 degrees about the world origin
+    t.transformBase(0, 0, 0, 0, 0, Math.PI / 2, [0, 0, 0])
+
+    // (1,0,0) -> (0,1,0); (2,0,0) -> (0,2,0); (0,2,0) -> (-2,0,0)
+    expect(t.basePoseW[0]).toBeCloseTo(0)
+    expect(t.basePoseW[1]).toBeCloseTo(1)
+    expect(t.basePoseW[3]).toBeCloseTo(0)
+    expect(t.basePoseW[4]).toBeCloseTo(2)
+    expect(t.basePoseW[6]).toBeCloseTo(-2)
+    expect(t.basePoseW[7]).toBeCloseTo(0)
+    // identity orientations rotate to a 90-degree yaw quaternion (w,z) = (√2/2, √2/2)
+    for (let f = 0; f < 3; f++) {
+      const q = t.getFrame(f).baseQuatW
+      expect(q[0]).toBeCloseTo(Math.SQRT1_2, 5)
+      expect(q[3]).toBeCloseTo(Math.SQRT1_2, 5)
+      expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1)
+    }
+  })
+
+  it('should keep orientations unit and compose with existing base orientation', () => {
+    const t = makeTrajectory(2, 1)
+    t.setBasePose(0, [0, 0, 0], [Math.SQRT1_2, 0, 0, Math.SQRT1_2]) // yaw 90 deg
+    t.transformBase(0, 0, 0, 0, 0, Math.PI / 2, [0, 0, 0])
+    // 90 + 90 = 180 deg yaw -> (w,z) = (0,1)
+    const [roll, pitch, yaw] = t.getQuatEuler(0)
+    expect(roll).toBeCloseTo(0, 5)
+    expect(pitch).toBeCloseTo(0, 5)
+    expect(yaw).toBeCloseTo(Math.PI, 5)
+    const q = t.getFrame(0).baseQuatW
+    expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1)
+  })
+
+  it('should be a no-op with an identity transform and on an empty trajectory', () => {
+    const t = makeTrajectory(3, 1)
+    const posBefore = Array.from(t.basePoseW)
+    const quatBefore = Array.from(t.baseQuatW)
+    t.transformBase(0, 0, 0, 0, 0, 0, [0, 0, 1])
+    expect(Array.from(t.basePoseW)).toEqual(posBefore)
+    expect(Array.from(t.baseQuatW)).toEqual(quatBefore)
+
+    const empty = Trajectory.empty()
+    empty.transformBase(1, 0, 0, 0, 0, 0, [0, 0, 0])
+    expect(empty.frameCount).toBe(0)
+  })
+
+  it('should copy base arrays from another trajectory, leaving joints intact', () => {
+    const t = makeTrajectory(4, 2)
+    const source = makeTrajectory(4, 2)
+    source.setBasePose(1, [9, 8, 7], [1, 0, 0, 0])
+    const jointsBefore = Array.from(t.jointPos)
+    t.copyBaseFrom(source)
+    expect(t.basePoseW[3]).toBeCloseTo(9)
+    expect(t.basePoseW[4]).toBeCloseTo(8)
+    expect(t.basePoseW[5]).toBeCloseTo(7)
+    expect(Array.from(t.jointPos)).toEqual(jointsBefore)
+  })
 })

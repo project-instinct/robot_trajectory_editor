@@ -6,6 +6,7 @@ import { RobotModel } from './three/RobotModel'
 import { setViewport } from './three/viewportContext'
 import { LeftPanel } from './components/LeftPanel'
 import { TargetPanel } from './components/TargetPanel'
+import { TransformPanel } from './components/TransformPanel'
 import { StatePanel } from './components/StatePanel'
 import { OpsPanel } from './components/OpsPanel'
 import { Timeline } from './components/Timeline'
@@ -20,10 +21,41 @@ function App() {
   const [terrain, setTerrain] = useState<THREE.Group | null>(null)
   const [showTerrainEditor, setShowTerrainEditor] = useState(false)
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
+  const [leftWidth, setLeftWidth] = useState(280)
+  const [rightWidth, setRightWidth] = useState(280)
+  const resizeRef = useRef<{ side: 'left' | 'right'; startX: number; startWidth: number } | null>(null)
   const {
     trajectory, trajectoryVersion, currentFrame, pinnedLinks,
     setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, undo,
   } = useStore()
+
+  // Drag-resize the left/right panels by their vertical divider handles.
+  const handleResizeMove = useCallback((e: PointerEvent) => {
+    const drag = resizeRef.current
+    if (!drag) return
+    // The left divider sits to the right of its panel; the right divider sits to
+    // its left, so the sign flips so both handles move the boundary under the
+    // cursor (drag right = left panel wider, right panel narrower).
+    const delta = drag.side === 'left' ? e.clientX - drag.startX : drag.startX - e.clientX
+    const width = drag.startWidth + delta
+    if (drag.side === 'left') setLeftWidth(Math.min(420, Math.max(200, width)))
+    else setRightWidth(Math.min(520, Math.max(200, width)))
+  }, [])
+
+  const endResize = useCallback(() => {
+    resizeRef.current = null
+    document.body.style.userSelect = ''
+    window.removeEventListener('pointermove', handleResizeMove)
+    window.removeEventListener('pointerup', endResize)
+  }, [handleResizeMove])
+
+  const startResize = useCallback((side: 'left' | 'right') => (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    document.body.style.userSelect = 'none'
+    resizeRef.current = { side, startX: e.clientX, startWidth: side === 'left' ? leftWidth : rightWidth }
+    window.addEventListener('pointermove', handleResizeMove)
+    window.addEventListener('pointerup', endResize)
+  }, [leftWidth, rightWidth, handleResizeMove, endResize])
 
   // Pull launch-time config (e.g. arrow-key nudge/frame steps) from the backend.
   useEffect(() => {
@@ -201,7 +233,7 @@ function App() {
   return (
     <div style={rootStyle}>
       <div style={mainRow}>
-        <div style={leftPanelStyle}>
+        <div style={{ ...leftPanelStyle, width: leftWidth }}>
           <LeftPanel
             onLoadTerrain={handleLoadTerrain}
             terrain={terrain}
@@ -209,13 +241,16 @@ function App() {
             onRobotUploaded={setUrdfRelPath}
           />
           <TargetPanel />
+          <TransformPanel />
           <OpsPanel />
         </div>
+        <div style={handleStyle} onPointerDown={startResize('left')} />
         <div style={viewportWrapperStyle}>
           <PinnedBanner />
           <div ref={viewportRef} style={viewportStyle} />
         </div>
-        <div style={rightPanelStyle}>
+        <div style={handleStyle} onPointerDown={startResize('right')} />
+        <div style={{ ...rightPanelStyle, width: rightWidth }}>
           <StatePanel />
         </div>
       </div>
@@ -248,15 +283,26 @@ const mainRow: React.CSSProperties = {
 }
 
 const leftPanelStyle: React.CSSProperties = {
-  width: '220px',
   background: '#1a1a2e',
   borderRight: '1px solid #333',
+  overflowX: 'hidden',
   overflowY: 'auto',
+  scrollbarGutter: 'stable',
+  flexShrink: 0,
+}
+
+const handleStyle: React.CSSProperties = {
+  width: '5px',
+  flexShrink: 0,
+  cursor: 'col-resize',
+  background: '#333',
+  touchAction: 'none',
 }
 
 const viewportWrapperStyle: React.CSSProperties = {
   flex: 1,
   position: 'relative',
+  minWidth: 0,
 }
 
 const viewportStyle: React.CSSProperties = {
@@ -266,12 +312,11 @@ const viewportStyle: React.CSSProperties = {
 }
 
 const rightPanelStyle: React.CSSProperties = {
-  width: '280px',
   background: '#1a1a2e',
   borderLeft: '1px solid #333',
   display: 'flex',
   flexDirection: 'column',
-  overflowY: 'auto',
+  flexShrink: 0,
 }
 
 const timelineStyle: React.CSSProperties = {

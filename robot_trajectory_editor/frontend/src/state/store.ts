@@ -1,6 +1,17 @@
 import { create } from 'zustand'
 import { Trajectory, type ChannelKind } from './Trajectory'
 
+/** Slider values of the base-transform panel. Angles are in radians, matching
+ *  the euler convention used by Trajectory's baseQuat channels. */
+export interface BaseTransform {
+  tx: number
+  ty: number
+  tz: number
+  roll: number
+  pitch: number
+  yaw: number
+}
+
 export interface StoreState {
   trajectory: Trajectory
   /** Bumped on every in-place trajectory mutation so subscribers re-render. */
@@ -18,6 +29,12 @@ export interface StoreState {
   nudgeStep: number
   /** Frame step applied by the Left/Right arrow keys (from backend /api/config). */
   frameStep: number
+  /** Active base-transform session slider values, or null when idle. */
+  baseTransform: BaseTransform | null
+  /** Trajectory snapshot the active base transform is recomputed from, and the
+   *  point its rotation pivots around (the first base position at session start). */
+  baseTransformSource: Trajectory | null
+  baseTransformOrigin: [number, number, number] | null
 
   /** Load a new trajectory (resets playback position). */
   setTrajectory: (t: Trajectory) => void
@@ -53,6 +70,15 @@ export interface StoreState {
   smoothRange: () => void
   /** Linearly interpolate the selected channel between selected segment endpoints. */
   interpolateRange: () => void
+  /** Start a base-transform session: capture the undo snapshot, the pivot point,
+   *  and the source the live transform is recomputed from. */
+  beginBaseTransform: () => void
+  /** Apply a base transform to the whole trajectory live, recomputed from the
+   *  session source so the sliders are absolute offsets from the session start. */
+  setBaseTransform: (t: BaseTransform) => void
+  /** Confirm the active base-transform session (the transform is already applied
+   *  live; this just ends the session so a later edit forms a new undo step). */
+  applyBaseTransform: () => void
 }
 
 export const useStore = create<StoreState>((set, get) => ({
@@ -68,8 +94,14 @@ export const useStore = create<StoreState>((set, get) => ({
   robotModelLoaded: false,
   nudgeStep: 0.01,
   frameStep: 1,
+  baseTransform: null,
+  baseTransformSource: null,
+  baseTransformOrigin: null,
 
-  setTrajectory: (t) => set({ trajectory: t, currentFrame: 0, undoStack: [] }),
+  setTrajectory: (t) => set({
+    trajectory: t, currentFrame: 0, undoStack: [],
+    baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
+  }),
   beginTrajectoryEdit: () => set(s => ({
     undoStack: [...s.undoStack, s.trajectory.clone()].slice(-100),
   })),
@@ -86,6 +118,7 @@ export const useStore = create<StoreState>((set, get) => ({
       undoStack: s.undoStack.slice(0, -1),
       currentFrame: nextFrame,
       trajectoryVersion: s.trajectoryVersion + 1,
+      baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
     }))
   },
   setCurrentFrame: (f) => set({ currentFrame: f }),
@@ -191,5 +224,36 @@ export const useStore = create<StoreState>((set, get) => ({
     get().beginTrajectoryEdit()
     trajectory.interpolateChannelRange(start, end, selectedChannel)
     get().touchTrajectory()
+  },
+
+  beginBaseTransform: () => {
+    const { trajectory } = get()
+    if (trajectory.frameCount === 0 || get().baseTransform) return
+    // One snapshot serves both as the undo target and the source the live
+    // transform is recomputed from, so dragging sliders around stays a single
+    // Ctrl+Z undoable operation.
+    const snapshot = trajectory.clone()
+    set({
+      undoStack: [...get().undoStack, snapshot].slice(-100),
+      baseTransformSource: snapshot,
+      baseTransformOrigin: [snapshot.basePoseW[0], snapshot.basePoseW[1], snapshot.basePoseW[2]],
+      baseTransform: { tx: 0, ty: 0, tz: 0, roll: 0, pitch: 0, yaw: 0 },
+    })
+  },
+
+  setBaseTransform: (t) => {
+    if (!get().baseTransform) get().beginBaseTransform()
+    const { baseTransformSource, baseTransformOrigin } = get()
+    if (!baseTransformSource || !baseTransformOrigin) return
+    const trajectory = get().trajectory
+    trajectory.copyBaseFrom(baseTransformSource)
+    trajectory.transformBase(t.tx, t.ty, t.tz, t.roll, t.pitch, t.yaw, baseTransformOrigin)
+    set({ baseTransform: t })
+    get().touchTrajectory()
+  },
+
+  applyBaseTransform: () => {
+    if (!get().baseTransform) return
+    set({ baseTransform: null, baseTransformSource: null, baseTransformOrigin: null })
   },
 }))

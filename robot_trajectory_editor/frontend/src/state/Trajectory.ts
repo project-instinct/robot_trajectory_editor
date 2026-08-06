@@ -20,6 +20,36 @@ function quatToEuler(w: number, x: number, y: number, z: number): [number, numbe
   return [roll, pitch, yaw]
 }
 
+/** Rotate vector v by the unit quaternion q (v' = q v q*). */
+function rotateVectorByQuat(
+  vx: number, vy: number, vz: number,
+  w: number, x: number, y: number, z: number,
+): [number, number, number] {
+  const c1 = y * vz - z * vy
+  const c2 = z * vx - x * vz
+  const c3 = x * vy - y * vx
+  const d1 = c1 + w * vx
+  const d2 = c2 + w * vy
+  const d3 = c3 + w * vz
+  const e1 = y * d3 - z * d2
+  const e2 = z * d1 - x * d3
+  const e3 = x * d2 - y * d1
+  return [vx + 2 * e1, vy + 2 * e2, vz + 2 * e3]
+}
+
+/** Hamilton product q1 ⊗ q2, the rotation of q1 applied after q2. */
+function mulQuats(
+  w1: number, x1: number, y1: number, z1: number,
+  w2: number, x2: number, y2: number, z2: number,
+): [number, number, number, number] {
+  return [
+    w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+    w1 * y2 + y1 * w2 + z1 * x2 - x1 * z2,
+    w1 * z2 + z1 * w2 + x1 * y2 - y1 * x2,
+  ]
+}
+
 function eulerToQuat(roll: number, pitch: number, yaw: number): [number, number, number, number] {
   const cr = Math.cos(roll * 0.5)
   const sr = Math.sin(roll * 0.5)
@@ -156,6 +186,51 @@ export class Trajectory {
     this.baseQuatW[frame * 4 + 1] = quat[1]
     this.baseQuatW[frame * 4 + 2] = quat[2]
     this.baseQuatW[frame * 4 + 3] = quat[3]
+  }
+
+  /** Overwrite the base position/orientation arrays from another trajectory
+   *  with the same frame count, leaving joint and keyframe data untouched. */
+  copyBaseFrom(other: Trajectory): void {
+    this.basePoseW.set(other.basePoseW)
+    this.baseQuatW.set(other.baseQuatW)
+  }
+
+  /**
+   * Transform the entire base position and orientation sequence in place
+   * (joint channels are untouched): each frame's position is rotated about
+   * `origin` by the euler (roll, pitch, yaw) and then translated by
+   * (tx, ty, tz); each frame's orientation is premultiplied by that same
+   * rotation so the whole trajectory moves as a rigid body.
+   */
+  transformBase(
+    tx: number, ty: number, tz: number,
+    roll: number, pitch: number, yaw: number,
+    origin: [number, number, number],
+  ): void {
+    if (this.frameCount === 0) return
+    const [rw, rx, ry, rz] = eulerToQuat(roll, pitch, yaw)
+    for (let f = 0; f < this.frameCount; f++) {
+      const i3 = f * 3
+      const [px, py, pz] = rotateVectorByQuat(
+        this.basePoseW[i3] - origin[0],
+        this.basePoseW[i3 + 1] - origin[1],
+        this.basePoseW[i3 + 2] - origin[2],
+        rw, rx, ry, rz,
+      )
+      this.basePoseW[i3] = px + origin[0] + tx
+      this.basePoseW[i3 + 1] = py + origin[1] + ty
+      this.basePoseW[i3 + 2] = pz + origin[2] + tz
+
+      const i4 = f * 4
+      const [qw, qx, qy, qz] = mulQuats(
+        rw, rx, ry, rz,
+        this.baseQuatW[i4], this.baseQuatW[i4 + 1], this.baseQuatW[i4 + 2], this.baseQuatW[i4 + 3],
+      )
+      this.baseQuatW[i4] = qw
+      this.baseQuatW[i4 + 1] = qx
+      this.baseQuatW[i4 + 2] = qy
+      this.baseQuatW[i4 + 3] = qz
+    }
   }
 
   insertKeyframe(frame: number): void { this.keyframes.add(frame) }
