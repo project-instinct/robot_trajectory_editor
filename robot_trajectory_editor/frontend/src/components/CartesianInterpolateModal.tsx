@@ -5,7 +5,9 @@ import {
   computeCartesianInterpolation,
   type CartesianInterpolationMethod,
   type CartesianLinkConstraint,
+  type CartesianLocalPoint,
 } from '../three/CartesianInterpolation'
+import { CartesianPointModal } from './CartesianPointModal'
 
 interface CartesianInterpolateModalProps {
   onClose: () => void
@@ -18,6 +20,11 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
   )
   const [selectedLinks, setSelectedLinks] = useState<string[]>([])
   const [constraints, setConstraints] = useState<Record<string, CartesianLinkConstraint>>({})
+  const [localPoints, setLocalPoints] = useState<Record<string, CartesianLocalPoint>>({})
+  const [pointEditor, setPointEditor] = useState<{
+    linkName: string
+    cancelConstraint: CartesianLinkConstraint
+  } | null>(null)
   const [method, setMethod] = useState<CartesianInterpolationMethod>('linear')
   const [warning, setWarning] = useState('')
 
@@ -25,6 +32,14 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
     setSelectedLinks(current => current.includes(linkName)
       ? current.filter(name => name !== linkName)
       : [...current, linkName])
+  }
+
+  const selectConstraint = (linkName: string, constraint: CartesianLinkConstraint) => {
+    const previous = constraints[linkName] ?? 'pose'
+    setConstraints(current => ({ ...current, [linkName]: constraint }))
+    if (constraint === 'position') {
+      setPointEditor({ linkName, cancelConstraint: previous })
+    }
   }
 
   const apply = () => {
@@ -45,6 +60,9 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
       selectedLinks.map(linkName => ({
         linkName,
         constraint: constraints[linkName] ?? 'pose',
+        localPoint: constraints[linkName] === 'position'
+          ? (localPoints[linkName] ?? [0, 0, 0])
+          : undefined,
       })),
       store.segmentStart,
       store.segmentEnd,
@@ -91,14 +109,22 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
                 <select
                   value={constraints[linkName] ?? 'pose'}
                   disabled={!selectedLinks.includes(linkName)}
-                  onChange={event => setConstraints(current => ({
-                    ...current,
-                    [linkName]: event.target.value as CartesianLinkConstraint,
-                  }))}
+                  onChange={event => selectConstraint(
+                    linkName,
+                    event.target.value as CartesianLinkConstraint,
+                  )}
                 >
                   <option value="pose">Position + orientation</option>
                   <option value="position">Position only</option>
                 </select>
+                {(constraints[linkName] ?? 'pose') === 'position' && (
+                  <button
+                    disabled={!selectedLinks.includes(linkName)}
+                    onClick={() => setPointEditor({ linkName, cancelConstraint: 'position' })}
+                  >
+                    Point {formatPoint(localPoints[linkName] ?? [0, 0, 0])}
+                  </button>
+                )}
               </div>
             ))}
             {linkNames.length === 0 && <span style={{ color: '#f88' }}>No IK target links are available.</span>}
@@ -109,9 +135,31 @@ export function CartesianInterpolateModal({ onClose }: CartesianInterpolateModal
           <button onClick={onClose}>Cancel</button>
           <button onClick={apply} disabled={selectedLinks.length === 0}>Apply</button>
         </div>
+        {pointEditor && (
+          <CartesianPointModal
+            key={pointEditor.linkName}
+            linkName={pointEditor.linkName}
+            initialPoint={localPoints[pointEditor.linkName] ?? [0, 0, 0]}
+            onCancel={() => {
+              setConstraints(current => ({
+                ...current,
+                [pointEditor.linkName]: pointEditor.cancelConstraint,
+              }))
+              setPointEditor(null)
+            }}
+            onConfirm={point => {
+              setLocalPoints(current => ({ ...current, [pointEditor.linkName]: point }))
+              setPointEditor(null)
+            }}
+          />
+        )}
       </div>
     </div>
   )
+}
+
+function formatPoint(point: CartesianLocalPoint): string {
+  return point.map(value => value.toFixed(2)).join(', ')
 }
 
 const overlayStyle: React.CSSProperties = {
@@ -121,7 +169,7 @@ const overlayStyle: React.CSSProperties = {
 }
 
 const modalStyle: React.CSSProperties = {
-  width: '420px', maxWidth: '90vw', padding: '16px',
+  width: '560px', maxWidth: '90vw', padding: '16px',
   background: '#1e1e2e', border: '1px solid #444', borderRadius: '8px',
 }
 

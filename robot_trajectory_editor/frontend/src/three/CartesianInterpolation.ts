@@ -10,10 +10,13 @@ import type { RobotModel } from './RobotModel'
 
 export type CartesianInterpolationMethod = 'linear' | 'cubic'
 export type CartesianLinkConstraint = 'position' | 'pose'
+export type CartesianLocalPoint = [number, number, number]
 
 export interface CartesianLinkSelection {
   linkName: string
   constraint: CartesianLinkConstraint
+  /** Point expressed in the selected link's local frame. */
+  localPoint?: CartesianLocalPoint
 }
 
 export type CartesianInterpolationResult =
@@ -39,6 +42,13 @@ const ADAPTIVE_SUBSTEPS = 8
 
 export function interpolationAlpha(t: number, method: CartesianInterpolationMethod): number {
   return method === 'cubic' ? t * t * (3 - 2 * t) : t
+}
+
+export function localPointToWorld(
+  pose: { pos: THREE.Vector3; quat: THREE.Quaternion },
+  localPoint: readonly [number, number, number],
+): THREE.Vector3 {
+  return new THREE.Vector3(...localPoint).applyQuaternion(pose.quat).add(pose.pos)
 }
 
 function frameConfiguration(
@@ -79,12 +89,16 @@ function makeTargets(
   alpha: number,
 ): Map<string, IkGoalTarget> {
   const targets = new Map<string, IkGoalTarget>()
-  for (const { linkName, constraint } of linkSelections) {
+  for (const { linkName, constraint, localPoint } of linkSelections) {
     const first = startPoses.get(linkName)!
     const last = endPoses.get(linkName)!
+    const point: CartesianLocalPoint = localPoint ?? [0, 0, 0]
     targets.set(linkName, {
-      pos: first.pos.clone().lerp(last.pos, alpha),
+      pos: constraint === 'position'
+        ? localPointToWorld(first, point).lerp(localPointToWorld(last, point), alpha)
+        : first.pos.clone().lerp(last.pos, alpha),
       quat: constraint === 'pose' ? first.quat.clone().slerp(last.quat, alpha) : undefined,
+      localPoint: constraint === 'position' ? point : undefined,
     })
   }
   return targets
@@ -106,7 +120,10 @@ function targetsSatisfied(
   for (const [linkName, target] of targets) {
     const actual = solver.getLinkWorldPose(linkName)
     if (!actual) return false
-    if (actual.pos.distanceTo(target.pos) > CARTESIAN_POSITION_TOLERANCE) return false
+    const actualPosition = target.localPoint
+      ? localPointToWorld(actual, target.localPoint)
+      : actual.pos
+    if (actualPosition.distanceTo(target.pos) > CARTESIAN_POSITION_TOLERANCE) return false
     if (
       target.quat
       && actual.quat.angleTo(target.quat) > CARTESIAN_ORIENTATION_TOLERANCE
@@ -139,12 +156,16 @@ function linkResiduals(
   return linkSelections.map(({ linkName, constraint }) => {
     const target = targets.get(linkName)!
     const actual = solver.getLinkWorldPose(linkName)
+    const actualPosition = actual && target.localPoint
+      ? localPointToWorld(actual, target.localPoint)
+      : actual?.pos
     return {
       link: linkName,
       constraint,
       targetPosition: vectorValues(target.pos),
-      actualPosition: actual ? vectorValues(actual.pos) : null,
-      positionErrorMeters: actual ? rounded(actual.pos.distanceTo(target.pos)) : null,
+      localPoint: target.localPoint ?? null,
+      actualPosition: actualPosition ? vectorValues(actualPosition) : null,
+      positionErrorMeters: actualPosition ? rounded(actualPosition.distanceTo(target.pos)) : null,
       targetQuaternionXyzw: target.quat ? quaternionValues(target.quat) : null,
       actualQuaternionXyzw: actual ? quaternionValues(actual.quat) : null,
       orientationErrorDegrees: actual && target.quat

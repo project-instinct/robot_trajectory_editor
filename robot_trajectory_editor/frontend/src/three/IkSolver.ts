@@ -26,6 +26,8 @@ export interface IkGoalTarget {
   pos: THREE.Vector3
   /** Omit rotation for a position-only goal. */
   quat?: THREE.Quaternion
+  /** Position-only attachment point in the constrained link's local frame. */
+  localPoint?: readonly [number, number, number]
 }
 
 interface MutableUrdfJoint extends THREE.Object3D {
@@ -75,6 +77,7 @@ export class IkSolver {
   private ikJoints = new Map<string, Joint>()
   private ikLinks = new Map<string, Link>()
   private goals = new Map<string, Goal>()
+  private pointAttachments = new Map<string, { joint: Joint; link: Link }>()
 
   constructor(urdfRobot: URDFRobot, options: { lockBase?: boolean } = {}) {
     // Keep all links (trimUnused=false) so hands/head remain valid IK targets.
@@ -188,7 +191,7 @@ export class IkSolver {
   solveGoals(targets: ReadonlyMap<string, IkGoalTarget>): number[] {
     this.keepGoalKeys([...targets].map(([name, target]) => `${name}|${target.quat ? 'pose' : 'pos'}`))
     for (const [linkName, target] of targets) {
-      const goal = this.ensureGoal(linkName, Boolean(target.quat))
+      const goal = this.ensureGoal(linkName, Boolean(target.quat), target.localPoint)
       goal.setPosition(target.pos.x, target.pos.y, target.pos.z)
       if (target.quat) {
         goal.setQuaternion(target.quat.x, target.quat.y, target.quat.z, target.quat.w)
@@ -234,21 +237,48 @@ export class IkSolver {
     }
   }
 
-  private ensureGoal(linkName: string, withRotation: boolean): Goal {
+  private ensureGoal(
+    linkName: string,
+    withRotation: boolean,
+    localPoint: readonly [number, number, number] = [0, 0, 0],
+  ): Goal {
     const key = `${linkName}|${withRotation ? 'pose' : 'pos'}`
+    const closureLink = withRotation
+      ? this.ikLinks.get(linkName)
+      : this.ensurePointAttachment(linkName, localPoint)
     const existing = this.goals.get(key)
     if (existing) return existing
-    const link = this.ikLinks.get(linkName)
-    if (!link) throw new Error(`IkSolver: unknown link "${linkName}"`)
+    if (!closureLink) throw new Error(`IkSolver: unknown link "${linkName}"`)
 
     const goal = new Goal()
     if (withRotation) goal.setDoF(DOF_X, DOF_Y, DOF_Z, DOF_EX, DOF_EY, DOF_EZ)
     else goal.setDoF(DOF_X, DOF_Y, DOF_Z)
-    goal.makeClosure(link)
+    goal.makeClosure(closureLink)
 
     this.goals.set(key, goal)
     this.solver.updateStructure()
     return goal
+  }
+
+  /** Adds a fixed branch so the IK goal follows an arbitrary point on a link. */
+  private ensurePointAttachment(
+    linkName: string,
+    localPoint: readonly [number, number, number],
+  ): Link {
+    let attachment = this.pointAttachments.get(linkName)
+    if (!attachment) {
+      const parent = this.ikLinks.get(linkName)
+      if (!parent) throw new Error(`IkSolver: unknown link "${linkName}"`)
+      const joint = new Joint()
+      const link = new Link()
+      parent.addChild(joint)
+      joint.addChild(link)
+      attachment = { joint, link }
+      this.pointAttachments.set(linkName, attachment)
+    }
+    attachment.joint.setPosition(localPoint[0], localPoint[1], localPoint[2])
+    attachment.joint.setMatrixWorldNeedsUpdate()
+    return attachment.link
   }
 
   private keepGoalKeys(goalKeys: string[]): void {

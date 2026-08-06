@@ -51,6 +51,10 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - "Cartesian Interpolate": Interpolate the 3D position and orientation of some selected link using linear interpolation from the start frame to the end frame (pre-selected in the timeline). Since the robot state is represented in joint space, this button should pop up a window:
         - Letting the user select what links to interpolate, whether each link constrains position only or both position and orientation, and the interpolation method (linear or cubic).
+            - When selecting position-only constraint, the interpolation should be a position (point) relative the that selected link's local frame.
+                - It should pop-up a new window letting the user to configure the relative position by showing the reference link and the mesh of the selected link in a new 3D window.
+                - The user should be able to drag a x/y/z scroll bar to decide the relative position of the selected link in its local frame.
+                - The visualization of the mesh of the selected link should be 0.6 transparent, and the relative position of the selected link should be visualized as a small sphere in the new 3D window.
         - After clicking "apply" in the popup-window, the editor shall compute the floating-base IK for each frame in the selected segment, and update the base pose and joint position sequences accordingly. If the IK fails for any frame, the editor should display a warning message to the user and abort the application of the interpolation, and stay in the current state without any changes.
         - After clicking "cancel" in the popup-window, the editor shall do nothing and stay in the current state without any changes.
 
