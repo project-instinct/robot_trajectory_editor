@@ -29,6 +29,10 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - A "Load Trajectory" button allows users to load an existing trajectory file in `.npz` format.
 
+        - If multiple files are selected, the editor should load them one by one. Then show the file list below the "Load Trajectory" button, and allow the user to select which trajectory to visualize and edit.
+
+        - If a folder is selected, please select all files ends with `.npz` in the folder, and load them one by one.
+
     - A "Load Terrain" button allows users to load a terrain file in `.obj` format. The terrain mesh file has the same coordinate system as the robot trajectory, and the robot will be placed on the terrain when the trajectory is played.
 
     - A "Save Trajectory" button allows users to save the current trajectory to a `.npz` file. (prompt the use to select a file path)
