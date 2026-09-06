@@ -264,6 +264,9 @@ export class DragController {
   }
 
   private onPointerDown = (event: PointerEvent): void => {
+    // Reserve direct touch gestures for OrbitControls: one finger rotates and
+    // two fingers pan/zoom. Mouse and pen input still perform robot edits.
+    if (event.pointerType === 'touch') return
     if (event.button !== 0 || !this.robot) return
     // A second click may be the start of a double-click. Cancel the first
     // click's deferred selection so pinning never leaves a gizmo behind.

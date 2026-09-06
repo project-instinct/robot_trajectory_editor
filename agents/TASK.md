@@ -25,6 +25,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - If no terrain mesh loaded, create a flat ground plane at z=0 for the robot to stand on.
 
+    - The view can be rotated, panned, and zoomed using mouse or touch gestures.
+
 - On the left, there is a panel for loading and saving trajectories, as well as selecting the robot model (if the launch CLI does not provide a robot urdf path)
 
     - A "Load Trajectory" button allows users to load an existing trajectory file in `.npz` format.
@@ -74,7 +76,21 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - Double-clicking the timeline adds a keyframe anchor at the clicked frame.
 
-    - Dragging a keyframe anchor draws the selected `Edit Target` plot on the timeline: horizontal movement changes the frame, vertical movement changes the value, and values are drawn continuously across crossed frames. The frame cursor and the entire 3D visualizer scene should follow the dragged anchor.
+    - Dragging a keyframe anchor draws the selected `Edit Target` plot on the timeline:
+
+        - horizontal movement changes the frame, vertical movement changes the value, and values are drawn continuously across crossed frames.
+
+        - The frame cursor and the entire 3D visualizer scene should follow the dragged anchor.
+
+        - The timeline drawing function should be touch-screen friendly. If the user is on iPad with pen, the user should be able to drag the anchor with the pen, and the timeline should follow the pen movement.
+
+    - The timeline should support zooming in and out.
+
+        - Always display the current frame range and value range on the zommed timeline, and allow the user to adjust the frame range and value range by dragging the edges of the global timeline.
+
+        - For PC users, the user can use "Alt + mouse wheel" to zoom in and out of the timeline.
+
+        - For iPad users, the user can use "two-finger pinch" on the timeline panel to zoom in and out of the timeline.
 
     - Right-clicking a keyframe anchor removes it.
 

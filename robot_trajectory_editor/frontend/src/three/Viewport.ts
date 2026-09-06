@@ -48,6 +48,11 @@ export class Viewport {
     this.controls.target.set(0, 0, 0)
     this.controls.enableDamping = true
     this.controls.dampingFactor = 0.1
+    this.controls.enableRotate = true
+    this.controls.enablePan = true
+    this.controls.enableZoom = true
+    this.controls.touches.ONE = THREE.TOUCH.ROTATE
+    this.controls.touches.TWO = THREE.TOUCH.DOLLY_PAN
     this.controls.update()
 
     this.terrainGroup = new THREE.Group()

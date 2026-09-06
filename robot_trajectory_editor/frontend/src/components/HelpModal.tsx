@@ -24,9 +24,10 @@ export function HelpModal({ onClose }: HelpModalProps) {
           <Section title="Timeline (bottom)">
             <Item>Click or drag on the timeline to scrub the playhead.</Item>
             <Item>Shift + drag to select a segment; it is highlighted and targeted by Fill / Smooth / Interpolate / arrow nudges.</Item>
-            <Item>Double-click to add a keyframe anchor. Drag it like a pen to draw the selected target curve: horizontal movement changes time, vertical movement changes value, and the playhead and 3D scene follow.</Item>
+            <Item>Double-click to add a keyframe anchor. Drag it with a mouse or pen to draw the selected target curve: horizontal movement changes time, vertical movement changes value, and the playhead and 3D scene follow.</Item>
             <Item>Right-click a keyframe to remove it.</Item>
-            <Item>Mouse wheel steps the playhead.</Item>
+            <Item>Mouse wheel steps the playhead. Hold Alt while scrolling to zoom around the pointer, or pinch with two fingers on a touch screen.</Item>
+            <Item>The labels show the visible frame and value ranges. Drag the left/right or top/bottom edges of the global navigator to adjust either range.</Item>
           </Section>
           <Section title="Keyboard">
             <Item>Up / Down: nudge the selected target by the step size. If a timeline segment is selected, every frame in the segment is nudged; otherwise only the current frame.</Item>
@@ -40,6 +41,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Esc: unfix all pinned links, or clear the selected segment.</Item>
           </Section>
           <Section title="3D Viewport">
+            <Item>Drag empty space to rotate the camera, right-drag to pan, and scroll to zoom. On a touch screen, use one finger to rotate and two fingers to pan or zoom.</Item>
             <Item>Drag a body link to move it; joint positions are solved by IK and written to the current frame.</Item>
             <Item>Drag the robot base to translate it; Shift + drag the base to rotate (yaw).</Item>
             <Item>Double-click links to fix their positions and orientations in the world frame. Pinned meshes are highlighted; double-click one again to unfix it, or press Esc to unfix all.</Item>

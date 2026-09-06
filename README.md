@@ -70,10 +70,12 @@ cd robot_trajectory_editor/frontend && npm test
 ## Timeline Interaction
 
 - Click / drag: scrub playhead; mouse wheel: step frames
+- Alt + mouse wheel: zoom the timeline around the pointer; two-finger pinch: zoom and pan the visible frame range
+- The visible frame/value ranges are labeled; drag the global navigator's left/right or top/bottom edges to adjust them
 - Shift+drag: select segment (Fill/Smooth apply to it; Esc clears)
 - `I` / `O`: set the segment start/end to the current playhead frame; when used alone, the other endpoint defaults to the timeline end/start; `U`: clear it
 - Double-click: add keyframe anchor at that frame
-- Drag keyframe like a drawing pen: horizontal = time, vertical = selected channel value; the playhead and 3D scene follow
+- Drag a keyframe with a mouse or pen like a drawing pen: horizontal = time, vertical = selected channel value; the playhead and 3D scene follow
 - Right-click keyframe: remove it
 
 ## Cartesian Interpolation
