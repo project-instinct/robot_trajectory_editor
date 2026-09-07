@@ -23,6 +23,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - The editor provides a main window with a 3D visualization of the robot and its trajectory, as well as the terrain mesh if loaded.
 
+    - Show the world coordinate axis in the main 3D window, with the origin at (0,0,0) and the z-axis pointing up. Do notice that the terrain mesh must be in the same coordinate system as the robot trajectory.
+
     - If no terrain mesh loaded, create a flat ground plane at z=0 for the robot to stand on.
 
     - The view can be rotated, panned, and zoomed using mouse or touch gestures.
@@ -36,6 +38,10 @@ This is the source code of a web-based robot trajectory editor. It allows users 
         - If a folder is selected, please select all files ends with `.npz` in the folder, and load them one by one.
 
     - A "Load Terrain" button allows users to load a terrain file in `.obj` format. The terrain mesh file has the same coordinate system as the robot trajectory, and the robot will be placed on the terrain when the trajectory is played.
+
+        - Only one terrain mesh can be loaded at a time. If a new terrain mesh is loaded, the previous one will be replaced.
+
+        - Show the terrain file name below the "Load Terrain" button.
 
     - A "Save Trajectory" button allows users to save the current trajectory to a `.npz` file. (prompt the use to select a file path)
 

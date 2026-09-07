@@ -14,6 +14,7 @@ export class Viewport {
   terrainGroup: THREE.Group
   groundPlane: THREE.Mesh | null = null
   grid: THREE.Group
+  worldAxis: THREE.AxesHelper
   private _running = true
   private _container: HTMLElement
   private _resizeObserver: ResizeObserver
@@ -63,6 +64,9 @@ export class Viewport {
     this.grid = this.makeXYGrid(10, 10)
     this.grid.position.z = 0.001
     this.scene.add(this.grid)
+
+    this.worldAxis = new THREE.AxesHelper(2)
+    this.scene.add(this.worldAxis)
 
     this.dragController = new DragController(this)
 

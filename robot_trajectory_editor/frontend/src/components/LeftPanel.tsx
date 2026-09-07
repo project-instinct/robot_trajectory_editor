@@ -27,6 +27,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const [selectedUrdf, setSelectedUrdf] = useState('')
   const [loadError, setLoadError] = useState('')
   const [showHelp, setShowHelp] = useState(false)
+  const [terrainName, setTerrainName] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const trajectoryFolderRef = useRef<HTMLInputElement>(null)
   const terrainInputRef = useRef<HTMLInputElement>(null)
@@ -116,6 +117,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
     const data = isStl ? await file.arrayBuffer() : await file.text()
     const group = await loadTerrain(data, file.name)
     onLoadTerrain(group)
+    setTerrainName(file.name)
     e.target.value = ''
   }
 
@@ -183,6 +185,9 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       )}
       <button onClick={handleSaveTrajectory}>Save Trajectory</button>
       <button onClick={handleLoadTerrain}>Load Terrain</button>
+      {terrainName && (
+        <div style={{ fontSize: '11px', color: '#88aacc', wordBreak: 'break-all' }}>{terrainName}</div>
+      )}
       <button onClick={handleSaveTerrain}>Save Terrain</button>
       <button onClick={onEditTerrain}>Edit Terrain</button>
       <button onClick={() => setShowHelp(true)}>?</button>
