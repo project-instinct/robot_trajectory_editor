@@ -31,6 +31,7 @@ beforeEach(() => {
     baseTransform: null,
     baseTransformSource: null,
     baseTransformOrigin: null,
+    trajectorySourceName: null,
   })
 })
 
@@ -403,5 +404,30 @@ describe('base transform', () => {
 
     s().applyBaseTransform()
     expect(s().baseTransform).toBeNull()
+  })
+})
+
+describe('replaceTrajectory', () => {
+  it('replaces the trajectory while keeping undo history', () => {
+    const s = () => useStore.getState()
+    s().beginTrajectoryEdit()
+    s().replaceTrajectory(s().trajectory.slice(2, 4))
+
+    expect(s().trajectory.frameCount).toBe(3)
+    expect(s().currentFrame).toBe(0)
+    expect(s().undoStack).toHaveLength(1)
+    expect(s().trajectoryVersion).toBe(1)
+
+    s().undo()
+    expect(s().trajectory.frameCount).toBe(10)
+    expect(s().currentFrame).toBe(0)
+  })
+
+  it('stores the source file name used for segment exports', () => {
+    const s = () => useStore.getState()
+    s().setTrajectorySourceName('walk')
+    expect(s().trajectorySourceName).toBe('walk')
+    s().setTrajectorySourceName(null)
+    expect(s().trajectorySourceName).toBeNull()
   })
 })

@@ -78,6 +78,13 @@ This is the source code of a web-based robot trajectory editor. It allows users 
         - After clicking "apply" in the popup-window, the editor shall compute the floating-base IK for each frame in the selected segment, and update the base pose and joint position sequences accordingly. If the IK fails for any frame, the editor should display a warning message to the user and abort the application of the interpolation, and stay in the current state without any changes.
         - After clicking "cancel" in the popup-window, the editor shall do nothing and stay in the current state without any changes.
 
+    - "Segments": selected segments of the entire trajectory
+        - When clicked, the web should pipup a window (with non-editable 3d motion visualization window and a timeline) to let the user select the start frame and end frame of each segment to be selected.
+        - The popup window should display the current frame in 3D view, and the user can click "Set Start Frame" or "Set End Frame" to set the start frame and end frame of the segment to be selected.
+        - In the popup window, it should add a "Add Segment" button to add more segments to be selected, and a "Remove Segment" button on each line of the selected segments to remove the segment from the selection.
+        - When the "Apply" button is clicked, the editor should chop those segments from the entire trajectory, and only keep the selected segments in the trajectory.
+            - If resulting in multiple segments, the editor should put them into different trajectory files, and save the files to the same folder as the original trajectory file, with the suffix "_segment_1", "_segment_2", etc. added to the original file name.
+
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
 
     - Double-clicking the timeline adds a keyframe anchor at the clicked frame.

@@ -1,11 +1,13 @@
 import { useStore } from '../state/store'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { CartesianInterpolateModal } from './CartesianInterpolateModal'
+import { SegmentsModal } from './SegmentsModal'
 
 export function OpsPanel() {
   const { fillRange, smoothRange, interpolateRange, isPlaying, setIsPlaying, trajectory } = useStore()
   const timerRef = useRef<number>(0)
   const [showCartesianInterpolate, setShowCartesianInterpolate] = useState(false)
+  const [showSegments, setShowSegments] = useState(false)
 
   const togglePlay = useCallback(() => {
     setIsPlaying(!isPlaying)
@@ -34,9 +36,13 @@ export function OpsPanel() {
       <button onClick={smoothRange}>Smooth</button>
       <button onClick={interpolateRange}>Interpolate</button>
       <button onClick={() => setShowCartesianInterpolate(true)}>Cartesian Interpolate</button>
+      <button onClick={() => setShowSegments(true)}>Segments</button>
       <button onClick={togglePlay}>{isPlaying ? 'Pause' : 'Play'}</button>
       {showCartesianInterpolate && (
         <CartesianInterpolateModal onClose={() => setShowCartesianInterpolate(false)} />
+      )}
+      {showSegments && (
+        <SegmentsModal onClose={() => setShowSegments(false)} />
       )}
     </div>
   )

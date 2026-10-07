@@ -35,9 +35,16 @@ export interface StoreState {
    *  point its rotation pivots around (the first base position at session start). */
   baseTransformSource: Trajectory | null
   baseTransformOrigin: [number, number, number] | null
+  /** Base file name (without the .npz extension) of the trajectory currently
+   *  loaded, used to derive exported segment file names. */
+  trajectorySourceName: string | null
 
   /** Load a new trajectory (resets playback position). */
   setTrajectory: (t: Trajectory) => void
+  /** Replace the active trajectory in place while keeping the undo history, so
+   *  the replacement (e.g. chopping segments) stays a single Ctrl+Z step. */
+  replaceTrajectory: (t: Trajectory) => void
+  setTrajectorySourceName: (name: string | null) => void
   /** Capture the current trajectory before an in-place user edit. */
   beginTrajectoryEdit: () => void
   /** Notify that the current trajectory was mutated in place. */
@@ -97,11 +104,21 @@ export const useStore = create<StoreState>((set, get) => ({
   baseTransform: null,
   baseTransformSource: null,
   baseTransformOrigin: null,
+  trajectorySourceName: null,
 
   setTrajectory: (t) => set({
     trajectory: t, currentFrame: 0, undoStack: [],
     baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
   }),
+  replaceTrajectory: (t) => set(s => ({
+    trajectory: t,
+    currentFrame: 0,
+    baseTransform: null,
+    baseTransformSource: null,
+    baseTransformOrigin: null,
+    trajectoryVersion: s.trajectoryVersion + 1,
+  })),
+  setTrajectorySourceName: (name) => set({ trajectorySourceName: name }),
   beginTrajectoryEdit: () => set(s => ({
     undoStack: [...s.undoStack, s.trajectory.clone()].slice(-100),
   })),

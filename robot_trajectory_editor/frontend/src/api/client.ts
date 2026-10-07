@@ -70,14 +70,14 @@ interface SaveFilePickerWindow extends Window {
 }
 
 /** Serialize and save a trajectory through the native picker when supported. */
-export async function saveTrajectoryFile(payload: TrajectoryJSON): Promise<void> {
+export async function saveTrajectoryFile(payload: TrajectoryJSON, suggestedName = 'trajectory.npz'): Promise<void> {
   const pickerWindow = window as SaveFilePickerWindow
   if (pickerWindow.showSaveFilePicker) {
     try {
       // Open the picker before awaiting serialization so the browser still
       // considers this part of the user's click or keyboard gesture.
       const handle = await pickerWindow.showSaveFilePicker({
-        suggestedName: 'trajectory.npz',
+        suggestedName,
         types: [{
           description: 'NumPy trajectory',
           accept: { 'application/octet-stream': ['.npz'] },
@@ -94,11 +94,17 @@ export async function saveTrajectoryFile(payload: TrajectoryJSON): Promise<void>
     return
   }
 
+  await downloadTrajectory(payload, suggestedName)
+}
+
+/** Serialize and download a trajectory as a file with the given name, without
+ *  showing a save picker. Used when several files are produced at once. */
+export async function downloadTrajectory(payload: TrajectoryJSON, fileName: string): Promise<void> {
   const blob = await serializeTrajectory(payload)
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = 'trajectory.npz'
+  anchor.download = fileName
   anchor.click()
   URL.revokeObjectURL(url)
 }

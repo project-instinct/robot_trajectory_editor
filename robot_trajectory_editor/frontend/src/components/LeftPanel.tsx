@@ -15,11 +15,13 @@ interface LeftPanelProps {
 
 interface LoadedTrajectory {
   name: string
+  /** File name without the .npz extension, used for exported segment files. */
+  fileName: string
   trajectory: Trajectory
 }
 
 export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUploaded }: LeftPanelProps) {
-  const { setTrajectory, trajectory } = useStore()
+  const { setTrajectory, trajectory, setTrajectorySourceName } = useStore()
   const [loadedTrajectories, setLoadedTrajectories] = useState<LoadedTrajectory[]>([])
   const [selectedTrajectoryIndex, setSelectedTrajectoryIndex] = useState(0)
   const [showRobotSelect, setShowRobotSelect] = useState(false)
@@ -59,6 +61,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
         const data = await parseTrajectory(file)
         loaded.push({
           name: file.webkitRelativePath || file.name,
+          fileName: baseNameOf(file.name),
           trajectory: Trajectory.fromJSON(data),
         })
       } catch (e) {
@@ -71,6 +74,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       setLoadedTrajectories(loaded)
       setSelectedTrajectoryIndex(0)
       setTrajectory(loaded[0].trajectory)
+      setTrajectorySourceName(loaded[0].fileName)
     }
     setLoadError(errors.join('\n'))
   }
@@ -96,6 +100,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
     )))
     setSelectedTrajectoryIndex(nextIndex)
     setTrajectory(nextTrajectory.trajectory)
+    setTrajectorySourceName(nextTrajectory.fileName)
   }
 
   const handleSaveTrajectory = async () => {
@@ -216,6 +221,11 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       <input ref={robotFolderRef} type="file" style={{ display: 'none' }} onChange={handleRobotFolderChange} />
     </div>
   )
+}
+
+function baseNameOf(fileName: string): string {
+  const base = fileName.split(/[\\/]/).pop() ?? fileName
+  return base.replace(/\.npz$/i, '')
 }
 
 const panelStyle: React.CSSProperties = {

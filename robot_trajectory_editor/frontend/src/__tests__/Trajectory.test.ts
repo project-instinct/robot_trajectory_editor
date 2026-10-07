@@ -168,6 +168,41 @@ describe('Trajectory', () => {
     expect(t.jointCount).toBe(0)
   })
 
+  it('should slice a frame range and remap keyframes', () => {
+    const t = makeTrajectory(10, 2)
+    t.insertKeyframe(3)
+    t.insertKeyframe(7)
+    t.insertKeyframe(9)
+
+    const sliced = t.slice(3, 7)
+    expect(sliced.framerate).toBe(30)
+    expect(sliced.frameCount).toBe(5)
+    expect(sliced.jointCount).toBe(2)
+    // Source frame 3 becomes slice frame 0; source frame 7 becomes slice frame 4.
+    expect(sliced.getChannelValue(0, { kind: 'joint', index: 0 })).toBeCloseTo(0.3)
+    expect(sliced.getChannelValue(4, { kind: 'joint', index: 0 })).toBeCloseTo(0.7)
+    expect(sliced.getChannelValue(0, { kind: 'basePos', axis: 0 })).toBeCloseTo(0.03)
+    expect(sliced.hasKeyframe(0)).toBe(true)
+    expect(sliced.hasKeyframe(4)).toBe(true)
+    // A keyframe outside the range is dropped.
+    expect(sliced.hasKeyframe(6)).toBe(false)
+  })
+
+  it('should slice base-only trajectories and normalize reversed ranges', () => {
+    const t = new Trajectory(
+      30,
+      [],
+      new Float32Array(0),
+      new Float32Array([0, 0, 1, 1, 0, 1, 2, 0, 1, 3, 0, 1]),
+      new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+    )
+    const sliced = t.slice(3, 1)
+    expect(sliced.frameCount).toBe(3)
+    expect(sliced.jointCount).toBe(0)
+    expect(sliced.basePoseW[0]).toBeCloseTo(1)
+    expect(sliced.basePoseW[6]).toBeCloseTo(3)
+  })
+
   it('should set a single channel value', () => {
     const t = makeTrajectory(5, 2)
     t.setChannelValue(2, { kind: 'joint', index: 1 }, 0.75)

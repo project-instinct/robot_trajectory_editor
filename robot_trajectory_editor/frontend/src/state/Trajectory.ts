@@ -196,6 +196,27 @@ export class Trajectory {
   }
 
   /**
+   * Return a new trajectory containing only frames [start, end] (inclusive).
+   * Keyframes inside the range are kept and shifted so frame `start` becomes
+   * frame 0 of the slice.
+   */
+  slice(start: number, end: number): Trajectory {
+    if (this.frameCount === 0) return Trajectory.empty()
+    const s = Math.max(0, Math.min(start, end))
+    const e = Math.min(this.frameCount - 1, Math.max(start, end))
+    if (e < s) return Trajectory.empty()
+    const jc = this.jointCount
+    const jointPos = this.jointPos.slice(s * jc, (e + 1) * jc)
+    const basePoseW = this.basePoseW.slice(s * 3, (e + 1) * 3)
+    const baseQuatW = this.baseQuatW.slice(s * 4, (e + 1) * 4)
+    const sliced = new Trajectory(this.framerate, [...this.jointNames], jointPos, basePoseW, baseQuatW)
+    for (const f of this.keyframes) {
+      if (f >= s && f <= e) sliced.keyframes.add(f - s)
+    }
+    return sliced
+  }
+
+  /**
    * Transform the entire base position and orientation sequence in place
    * (joint channels are untouched): each frame's position is rotated about
    * `origin` by the euler (roll, pitch, yaw) and then translated by
