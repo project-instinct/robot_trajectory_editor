@@ -23,11 +23,18 @@ class _Feasible(Exception):
 
 
 def _worker_evaluate(args):
-    intervals, variables, gradient, penalty, deadline = args
+    (intervals, variables, gradient, penalty, dynamics_rho, effort_rho, deadline,
+     dynamics_multipliers, effort_multipliers) = args
     objective = _WORKER['objective']
     objective.penalty, objective.deadline = penalty, deadline
+    objective.dynamics_rho, objective.effort_rho = dynamics_rho, effort_rho
+    objective.dynamics_multipliers = dynamics_multipliers
+    objective.effort_multipliers = effort_multipliers
+    objective.dynamics_residual = np.zeros_like(objective.dynamics_residual)
+    objective.effort_residual = np.zeros_like(objective.effort_residual)
     value, derivatives = objective.evaluate(variables, gradient=gradient, intervals=intervals)
-    return value, derivatives, dict(objective.errors)
+    return (value, derivatives, dict(objective.errors),
+            objective.dynamics_residual, objective.effort_residual)
 
 
 def evaluation_pool(workers):
@@ -52,8 +59,17 @@ class ContactObjective:
         self.velocity_reference = np.gradient(problem.reference, problem.dt, axis=0,
                                               edge_order=2 if problem.n > 2 else 1)
         self.errors = {}
+        self.fractions = (0., *GAUSS_POINTS, 1.)
+        self.sample_count = (problem.n - 1) * len(self.fractions)
+        # Augmented-Lagrangian multipliers for the six base-force equalities.
+        self.dynamics_rho = 1e3
+        self.dynamics_multipliers = np.zeros((self.sample_count, 6))
+        self.dynamics_residual = np.zeros((self.sample_count, 6))
+        self.effort_rho = 1e3
+        self.effort_multipliers = np.zeros((self.sample_count, 2*(problem.d-6)))
+        self.effort_residual = np.zeros_like(self.effort_multipliers)
         self.coefficients = [np.array([hermite(*basis, problem.dt, fraction) for basis in np.eye(4)])
-                             for fraction in (0., *GAUSS_POINTS, 1.)]
+                             for fraction in self.fractions]
 
     def check_time(self):
         if perf_counter() >= self.deadline:
@@ -76,7 +92,8 @@ class ContactObjective:
         self.errors = dict.fromkeys(robot.tolerances, 0.)
         force_scale = robot.tolerances['dynamics'] / 1e-3
         frames = range(problem.n - 1) if intervals is None else intervals
-        fractions = (0., *GAUSS_POINTS, 1.)
+        fractions = self.fractions
+        sample_of = {fraction: index for index, fraction in enumerate(fractions)}
         for frame in frames:
             for fraction in fractions:
                 self.check_time()
@@ -111,15 +128,27 @@ class ContactObjective:
                 chart = min(float(margins['orientation'][0]), 0.)
                 loss += self.penalty * chart*chart
                 dq[3:6] -= 2*self.penalty*chart*q[3:6]/(2*np.pi-.01)
+                sample = frame*len(fractions) + sample_of[fraction]
                 base_error = torque[:6]
+                base_normalized = base_error / force_scale
+                multipliers = self.dynamics_multipliers[sample]
+                self.dynamics_residual[sample] = base_error
                 effort_error = np.minimum(margins['effort'], 0.)
-                loss += self.penalty*(base_error @ base_error + effort_error @ effort_error)/force_scale**2
+                effort_normalized = effort_error / force_scale
+                effort_multipliers = self.effort_multipliers[sample]
+                self.effort_residual[sample] = effort_error
+                loss += multipliers @ base_normalized \
+                        + .5*self.dynamics_rho*(base_normalized @ base_normalized) \
+                        + effort_multipliers @ effort_normalized \
+                        + .5*self.effort_rho*(effort_normalized @ effort_normalized)
                 if gradient and (np.max(np.abs(base_error)) > .25*robot.tolerances['dynamics'] or
-                                 np.max(np.abs(effort_error), initial=0) > .25*robot.tolerances['effort']):
-                    weights = np.r_[base_error,
-                                    -effort_error[:joint_count]+effort_error[joint_count:]]
-                    weights *= 2*self.penalty/force_scale**2
-                    derivatives = robot.support_penalty_gradient(state, weights)
+                                 np.max(np.abs(effort_error), initial=0) > .25*robot.tolerances['effort'] or
+                                 np.any(multipliers) or np.any(effort_multipliers)):
+                    base_weight = (multipliers + self.dynamics_rho*base_normalized) / force_scale
+                    effort_alpha = effort_multipliers + self.effort_rho*effort_normalized
+                    effort_weight = (-effort_alpha[:joint_count]+effort_alpha[joint_count:]) / force_scale
+                    derivatives = robot.support_penalty_gradient(
+                        state, np.r_[base_weight, effort_weight])
                     dq += derivatives[0]
                     dqd += derivatives[1]
                     dqdd += derivatives[2]
@@ -152,12 +181,16 @@ def solve_contacts(problem, initial, deadline, workers=None):
         if pool is None:
             return objective.evaluate(variables, gradient=gradient)
         results = pool.map(_worker_evaluate,
-                           [(chunk, variables, gradient, objective.penalty, objective.deadline)
+                           [(chunk, variables, gradient, objective.penalty, objective.dynamics_rho,
+                             objective.effort_rho, objective.deadline,
+                             objective.dynamics_multipliers, objective.effort_multipliers)
                             for chunk in chunks])
         value = sum(result[0] for result in results)
         derivatives = sum(result[1] for result in results) if gradient else None
         objective.errors = {name: max(result[2][name] for result in results)
                             for name in objective.errors}
+        objective.dynamics_residual = sum(result[3] for result in results)
+        objective.effort_residual = sum(result[4] for result in results)
         return value, derivatives
     x, v = problem.unpack(initial)
     # Joint limits apply to the nodal variables, which are independent of the
@@ -165,18 +198,32 @@ def solve_contacts(problem, initial, deadline, workers=None):
     # start from avoidable violations; fixed keyframes are never touched.
     x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
     v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
-    # A geometric warm start for near-support/penetrating frames. This changes
-    # only free initial guesses, never the reference or fixed configurations.
+    # Smoothing first gives the local search a lower-acceleration starting
+    # point without changing the reference or any fixed frame. Ground alignment
+    # then runs on that smoothed path, so smoothing cannot undo the contacts.
+    from scipy.signal import savgol_filter
+    window = int(os.environ.get('TRAJECTORY_OPTIMIZE_SMOOTH', 21))
+    window = min(window, problem.n if problem.n % 2 else problem.n - 1)
+    if window >= 5:
+        smoothed = savgol_filter(x, window, 2, axis=0)
+        x[problem.free] = smoothed[problem.free]
+    x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
+    # The raw normal is available even for non-penetrating shapes; smoothing the
+    # offset avoids frame-to-frame acceleration spikes while preserving contacts.
+    offsets = np.zeros((problem.n, 3))
     for frame in problem.free:
         objective.check_time()
-        distances, jac = problem.collision(x[frame], penetration_only=True)
+        distances, normals = problem.robot.clearances(x[frame], return_normals=True)
         index = int(np.argmin(distances))
-        distance, normal = distances[index], jac[index, :3]
+        distance, normal = distances[index], normals[index]
         if distance < 0 or (distance < .05 and normal[2] > .7):
             norm = normal @ normal
             if norm > 1e-8:
-                x[frame, :3] += (1e-6-distance)*normal/norm
-        x[frame, 6:] = np.clip(x[frame, 6:], problem.robot.lower, problem.robot.upper)
+                offsets[frame] = (1e-6 - distance) * normal / norm
+    window = min(15, problem.n if problem.n % 2 else problem.n - 1)
+    if window >= 3:
+        offsets = savgol_filter(offsets, window, 2, axis=0)
+    x[problem.free, :3] += offsets[problem.free]
     v = np.gradient(x, problem.dt, axis=0, edge_order=2 if problem.n > 2 else 1)
     v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
     variables = problem.pack(x, v)
@@ -195,8 +242,11 @@ def solve_contacts(problem, initial, deadline, workers=None):
         return candidate
 
     remember(variables)
-    for penalty in (1e3, 1e5, 1e7):
-        objective.penalty = penalty
+    force_scale = problem.robot.tolerances['dynamics'] / 1e-3
+    rho, previous = 1e3, np.inf
+    for _ in range(int(os.environ.get('TRAJECTORY_OPTIMIZE_OUTERS', 8))):
+        objective.dynamics_rho = objective.effort_rho = rho
+        objective.penalty = rho / 2
 
         def function(scaled):
             candidate = scaled*scale
@@ -207,7 +257,7 @@ def solve_contacts(problem, initial, deadline, workers=None):
 
         try:
             result = minimize(function, variables/scale, jac=True, method='L-BFGS-B',
-                              options={'maxiter': int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 40)),
+                              options={'maxiter': int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 10)),
                                        'maxls': 20, 'ftol': 1e-12, 'gtol': 1e-7})
         except _Feasible as found:
             if pool is not None:
@@ -220,6 +270,16 @@ def solve_contacts(problem, initial, deadline, workers=None):
             if pool is not None:
                 pool.terminate()
             return SimpleNamespace(x=variables, nit=iterations, success=True)
+        residual = objective.dynamics_residual / force_scale
+        effort_residual = objective.effort_residual / force_scale
+        objective.dynamics_multipliers += rho * residual
+        objective.effort_multipliers = np.maximum(
+            0., objective.effort_multipliers + rho * effort_residual)
+        worst = max(float(np.max(np.abs(residual), initial=0)),
+                    float(np.max(np.abs(effort_residual), initial=0)))
+        if worst > .5 * previous:
+            rho = min(rho * 10, 1e7)
+        previous = worst
     if pool is not None:
         pool.terminate()
     worst = max(best[2], key=lambda name: best[2][name]/problem.robot.tolerances[name])

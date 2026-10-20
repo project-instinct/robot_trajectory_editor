@@ -21,6 +21,10 @@ TOLERANCES = {"dynamics": 1e-3, "position": 1e-6, "velocity": 1e-6,
               "effort": 1e-4, "clearance": 1e-5, "orientation": 1e-6}
 DENSE_VARIABLE_LIMIT = 500
 GAUSS_POINTS = (0.5 - np.sqrt(3) / 6, 0.5 + np.sqrt(3) / 6)
+# Contact support is inferred inside this gap; non-penetration itself remains
+# much tighter. Retargeted feet routinely sit a fraction of a millimetre above
+# the surface after smoothing.
+CONTACT_MARGIN = 1e-3
 
 
 def read_trajectory(payload, keyframes):
@@ -465,7 +469,7 @@ class RobotDynamics:
         gradient[0] += joint_weights @ (supported_dq-raw_dq) @ transform
         return gradient
 
-    def clearances(self, x, derivatives=False, penetration_only=False):
+    def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False):
         from support import cross
         q = self.configuration(x)
         self.pin.updateGeometryPlacements(self.model, self.data, self.geometry, self.geometry_data, q)
@@ -517,7 +521,7 @@ class RobotDynamics:
         distances *= signs
         if self.support is not None:
             mappings, contact_normals = [], []
-            active = np.flatnonzero(distances <= 1e-4)
+            active = np.flatnonzero(distances <= CONTACT_MARGIN)
             if len(active):
                 self.pin.computeJointJacobians(self.model, self.data, q)
                 order = np.r_[np.arange(6), self.v_indices]
@@ -535,6 +539,8 @@ class RobotDynamics:
             self.contact_geometry[x.tobytes()] = mappings, contact_normals, active.copy()
         if derivatives:
             return distances, signs[:, None] * np.asarray(gradients)
+        if return_normals:
+            return distances, signs[:, None] * np.asarray(normals)
         return distances
 
     def validate_surface_intersections(self):

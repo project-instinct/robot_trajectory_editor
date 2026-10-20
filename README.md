@@ -137,8 +137,10 @@ to the edited configuration sequence.
 Support/contact forces are enabled. **Terrain friction μ** in the Operations
 panel defaults to **0.7** and accepts any finite nonnegative value. The API field
 is `friction`, also defaulting to `0.7`. No contact labels are required: collision
-geometry within `1e-4` m of the terrain supplies candidate point contacts. Each
+geometry within `1e-3` m of the terrain supplies candidate point contacts. Each
 uses a unilateral force and a four-ray pyramid inside the Coulomb friction cone.
+The 1 mm contact-inference margin is separate from the `1e-5` m non-penetration
+acceptance tolerance.
 OSQP distributes these forces together with bounded joint torques to explain
 inverse dynamics. The remaining floating-base force must vanish, and joint
 torques must satisfy the available URDF effort limits. Geometry penetration is
@@ -146,14 +148,17 @@ allowed only during the search; output must pass non-penetration validation.
 This is a point-support model: it does not impose a sticking/sliding schedule,
 no-slip constraints, or a frictional dissipation law.
 
-The contact solver uses L-BFGS-B penalty stages over the whole trajectory, with
-constraint samples at both interval endpoints and two interior Gauss points.
-Free nodal velocities start from the reference finite differences clipped to the
-URDF velocity limits, and free positions start clipped to the position limits;
-fixed keyframes are never changed. Sample evaluation is distributed over forked
+The contact solver uses an augmented Lagrangian over the whole trajectory, with
+per-sample multipliers for the six base-force equalities and the actuator bounds,
+and L-BFGS-B inner solves. Position/velocity limits and penetration remain
+penalties. Constraint samples are at both interval endpoints and two interior
+Gauss points. Free nodal velocities start from the reference finite differences
+clipped to the URDF velocity limits. Free positions are smoothed (Savitzky-Golay)
+and ground-aligned before the solve; fixed keyframes are never changed. Sample evaluation is distributed over forked
 worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain and up to
 16 on flat ground) because independent interval blocks dominate the runtime.
-Penalties guide the search; they do not relax the acceptance tolerances.
+The augmented Lagrangian and penalties guide the search; they do not relax the
+acceptance tolerances.
 The pool uses `fork` so workers inherit the loaded model and terrain; set
 `TRAJECTORY_OPTIMIZE_WORKERS=1` to force serial evaluation. Trajectory Optimize has a 45-second
 computation budget, checked between samples. A check

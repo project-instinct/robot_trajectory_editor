@@ -12,11 +12,22 @@ from time import perf_counter
 
 import numpy as np
 import scipy.optimize
+import trimesh
 from scipy.optimize._numdiff import approx_derivative
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'robot_trajectory_editor/backend'))
 from npz_io import parse_npz
 from trajectory_optimize import optimize_trajectory
+
+
+def terrain_text(path):
+    if path is None:
+        return None
+    if path.suffix.lower() == '.obj':
+        return path.read_text()
+    mesh = trimesh.load(path, force='mesh')
+    text = mesh.export(file_type='obj')
+    return text.decode() if isinstance(text, bytes) else text
 
 
 def main():
@@ -29,6 +40,7 @@ def main():
     parser.add_argument('--iterations', type=int, default=20)
     parser.add_argument('--friction', type=float, default=.7)
     parser.add_argument('--contact-free', action='store_true')
+    parser.add_argument('--time-budget', type=float, default=45.)
     args = parser.parse_args()
     payload = parse_npz(args.trajectory.read_bytes())
     for field in ('base_pos_w', 'base_quat_w', 'joint_pos'):
@@ -105,8 +117,9 @@ def main():
 
         trajectory_optimize_contacts.solve_contacts = contact_solve
     try:
-        result = optimize_trajectory(payload, [], str(args.urdf), args.terrain.read_text() if args.terrain else None,
-                                    friction=None if args.contact_free else args.friction)
+        result = optimize_trajectory(payload, [], str(args.urdf), terrain_text(args.terrain),
+                                    friction=None if args.contact_free else args.friction,
+                                    time_budget=args.time_budget)
         print(json.dumps({'stage': 'validated', 'seconds': perf_counter()-started,
                           'residuals': result['residuals']}), flush=True)
     except Exception as error:
