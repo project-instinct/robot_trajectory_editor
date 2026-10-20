@@ -162,8 +162,9 @@ class ContactObjective:
         return loss, np.r_[gx[problem.free].ravel(), gv.ravel()]
 
 
-def solve_contacts(problem, initial, deadline, workers=None):
+def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     objective = ContactObjective(problem, deadline)
+    solver = solver or os.environ.get('TRAJECTORY_OPTIMIZE_SOLVER', 'penalty')
     if workers is None:
         workers = int(os.environ.get('TRAJECTORY_OPTIMIZE_WORKERS', 0))
     if workers <= 0:
@@ -243,43 +244,60 @@ def solve_contacts(problem, initial, deadline, workers=None):
 
     remember(variables)
     force_scale = problem.robot.tolerances['dynamics'] / 1e-3
-    rho, previous = 1e3, np.inf
-    for _ in range(int(os.environ.get('TRAJECTORY_OPTIMIZE_OUTERS', 8))):
-        objective.dynamics_rho = objective.effort_rho = rho
-        objective.penalty = rho / 2
 
+    def run_stage(maximum):
+        nonlocal variables, iterations
         def function(scaled):
-            candidate = scaled*scale
+            candidate = scaled * scale
             value, gradient = evaluate(candidate)
             if remember(candidate) <= 1:
                 raise _Feasible(candidate)
-            return value, gradient*scale
+            return value, gradient * scale
 
         try:
-            result = minimize(function, variables/scale, jac=True, method='L-BFGS-B',
-                              options={'maxiter': int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 10)),
-                                       'maxls': 20, 'ftol': 1e-12, 'gtol': 1e-7})
+            result = minimize(function, variables / scale, jac=True, method='L-BFGS-B',
+                              options={'maxiter': maximum, 'maxls': 20,
+                                       'ftol': 1e-12, 'gtol': 1e-7})
         except _Feasible as found:
-            if pool is not None:
-                pool.terminate()
-            return SimpleNamespace(x=found.variables, nit=iterations, success=True)
+            return found.variables
         iterations += result.nit
-        variables = result.x*scale
+        variables = result.x * scale
         evaluate(variables, gradient=False)
         if remember(variables) <= 1:
-            if pool is not None:
-                pool.terminate()
-            return SimpleNamespace(x=variables, nit=iterations, success=True)
-        residual = objective.dynamics_residual / force_scale
-        effort_residual = objective.effort_residual / force_scale
-        objective.dynamics_multipliers += rho * residual
-        objective.effort_multipliers = np.maximum(
-            0., objective.effort_multipliers + rho * effort_residual)
-        worst = max(float(np.max(np.abs(residual), initial=0)),
-                    float(np.max(np.abs(effort_residual), initial=0)))
-        if worst > .5 * previous:
-            rho = min(rho * 10, 1e7)
-        previous = worst
+            return variables
+        return None
+
+    if solver == 'augmented':
+        rho, previous = 1e3, np.inf
+        for _ in range(int(os.environ.get('TRAJECTORY_OPTIMIZE_OUTERS', 8))):
+            objective.dynamics_rho = objective.effort_rho = rho
+            objective.penalty = rho / 2
+            found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 10)))
+            if found is not None:
+                if pool is not None:
+                    pool.terminate()
+                return SimpleNamespace(x=found, nit=iterations, success=True)
+            residual = objective.dynamics_residual / force_scale
+            effort_residual = objective.effort_residual / force_scale
+            objective.dynamics_multipliers += rho * residual
+            objective.effort_multipliers = np.maximum(
+                0., objective.effort_multipliers + rho * effort_residual)
+            worst = max(float(np.max(np.abs(residual), initial=0)),
+                        float(np.max(np.abs(effort_residual), initial=0)))
+            if worst > .5 * previous:
+                rho = min(rho * 10, 1e7)
+            previous = worst
+    else:
+        objective.dynamics_multipliers[:] = 0.
+        objective.effort_multipliers[:] = 0.
+        for penalty in (1e3, 1e5, 1e7):
+            objective.dynamics_rho = objective.effort_rho = 2 * penalty
+            objective.penalty = penalty
+            found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 40)))
+            if found is not None:
+                if pool is not None:
+                    pool.terminate()
+                return SimpleNamespace(x=found, nit=iterations, success=True)
     if pool is not None:
         pool.terminate()
     worst = max(best[2], key=lambda name: best[2][name]/problem.robot.tolerances[name])

@@ -148,17 +148,20 @@ allowed only during the search; output must pass non-penetration validation.
 This is a point-support model: it does not impose a sticking/sliding schedule,
 no-slip constraints, or a frictional dissipation law.
 
-The contact solver uses an augmented Lagrangian over the whole trajectory, with
-per-sample multipliers for the six base-force equalities and the actuator bounds,
-and L-BFGS-B inner solves. Position/velocity limits and penetration remain
-penalties. Constraint samples are at both interval endpoints and two interior
-Gauss points. Free nodal velocities start from the reference finite differences
-clipped to the URDF velocity limits. Free positions are smoothed (Savitzky-Golay)
-and ground-aligned before the solve; fixed keyframes are never changed. Sample evaluation is distributed over forked
+The default contact solver uses L-BFGS-B penalty stages over the whole
+trajectory. An experimental augmented-Lagrangian path with per-sample multipliers
+for the base forces and actuator bounds is available with
+`TRAJECTORY_OPTIMIZE_SOLVER=augmented`; it improves some mean residuals but is not
+yet robust on every motion. Constraint samples are at both interval endpoints and
+two interior Gauss points. Free nodal velocities start from the reference finite
+differences clipped to the URDF velocity limits. Free positions are smoothed
+(Savitzky-Golay) and ground-aligned before the solve; fixed keyframes are never
+changed. `TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and
+`TRAJECTORY_OPTIMIZE_MAXITER` tune the warm start and inner iterations. Sample evaluation is distributed over forked
 worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain and up to
 16 on flat ground) because independent interval blocks dominate the runtime.
-The augmented Lagrangian and penalties guide the search; they do not relax the
-acceptance tolerances.
+The solver and penalties guide the search; they do not relax the acceptance
+tolerances.
 The pool uses `fork` so workers inherit the loaded model and terrain; set
 `TRAJECTORY_OPTIMIZE_WORKERS=1` to force serial evaluation. Trajectory Optimize has a 45-second
 computation budget, checked between samples. A check
