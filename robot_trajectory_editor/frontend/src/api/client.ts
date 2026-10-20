@@ -108,3 +108,26 @@ export async function downloadTrajectory(payload: TrajectoryJSON, fileName: stri
   anchor.click()
   URL.revokeObjectURL(url)
 }
+
+export interface TrajectoryOptimizeResult {
+  trajectory: TrajectoryJSON
+  residuals: Record<string, number>
+  tolerances: Record<string, number>
+  validation_samples_per_interval: number
+  iterations: number
+  friction?: number
+  seconds?: number
+}
+
+export async function optimizeTrajectory(
+  trajectory: TrajectoryJSON, keyframes: number[], terrainObj: string | null, urdfPath?: string, friction = 0.7,
+): Promise<TrajectoryOptimizeResult> {
+  const response = await fetch(`${BASE}/trajectory/optimize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trajectory, keyframes, terrain_obj: terrainObj, urdf_path: urdfPath, friction }),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(result.error || 'Trajectory Optimize failed')
+  return result
+}

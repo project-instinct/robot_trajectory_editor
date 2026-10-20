@@ -51,6 +51,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Smooth: low-pass filter the selected channel over the selected segment (or the whole trajectory).</Item>
             <Item>Interpolate: linearly interpolate the selected channel between the selected segment endpoints.</Item>
             <Item>Cartesian Interpolate: choose links, a position-only or position-and-orientation constraint for each, and linear or cubic interpolation. For jumps, prefer full pose on the torso and position only on the ankles. If any frame fails, no changes are applied.</Item>
+            <Item>Trajectory Optimize: optimize all frames using robot dynamics, joint limits and terrain geometry. Every keyframe fixes the full robot configuration. Successful results are one undo step; failures leave the trajectory unchanged. Support forces are inferred at terrain contacts using the configurable friction coefficient μ (default 0.7). A time-budget failure leaves the trajectory unchanged.</Item>
             <Item>Play / Pause: play the trajectory at its framerate.</Item>
           </Section>
         </div>

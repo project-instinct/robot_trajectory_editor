@@ -38,3 +38,47 @@ def test_upload_rejects_path_traversal():
             pass
         else:
             raise AssertionError(f"unsafe filename accepted: {filename}")
+
+
+def test_trajectory_optimize_requires_loaded_robot(monkeypatch):
+    import app as app_module
+    monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', None)
+    monkeypatch.setattr(app_module, 'UPLOADED_ROBOT_DIR', None)
+    response = app.test_client().post('/api/trajectory/optimize', json={'trajectory': {}})
+    assert response.status_code == 400
+    assert 'URDF' in response.get_json()['error']
+
+
+def test_trajectory_optimize_rejects_invalid_friction(tmp_path, monkeypatch):
+    import app as app_module
+    path = tmp_path / 'robot.urdf'
+    path.write_text('model')
+    monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', str(path))
+    for value in [-.1, None, True, '0.7']:
+        response = app.test_client().post('/api/trajectory/optimize', json={'trajectory': {}, 'friction': value})
+        assert response.status_code == 422
+        assert 'friction' in response.get_json()['error']
+
+
+def test_trajectory_optimize_uses_requested_model_and_propagates_failure(tmp_path, monkeypatch):
+    import app as app_module
+    from trajectory_optimize import TrajectoryOptimizeError
+    first, selected = tmp_path / 'first.urdf', tmp_path / 'selected.urdf'
+    first.write_text('first')
+    selected.write_text('selected')
+    monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', str(first))
+    def fail(trajectory, keyframes, path, terrain, resolver, friction):
+        assert friction == .7
+        assert path == str(selected)
+        assert keyframes == [0, 2]
+        assert terrain == 'edited mesh'
+        raise TrajectoryOptimizeError('Fixed keyframe 2 penetrates terrain by 0.01 m.')
+    monkeypatch.setattr(app_module, 'optimize_trajectory', fail)
+    response = app.test_client().post('/api/trajectory/optimize', json={
+        'trajectory': {}, 'keyframes': [0, 2], 'urdf_path': 'selected.urdf', 'terrain_obj': 'edited mesh',
+    })
+    assert response.status_code == 422
+    assert '0.01 m' in response.get_json()['error']
+    assert 'trajectory' not in response.get_json()
+    response = app.test_client().post('/api/trajectory/optimize', json={'urdf_path': '../outside.urdf'})
+    assert response.status_code == 400

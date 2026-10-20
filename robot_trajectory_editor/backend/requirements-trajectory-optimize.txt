@@ -1,0 +1,9 @@
+-r requirements.txt
+scipy>=1.11
+pin>=3.4,<4
+# Pinocchio 3 wheels link against the urdfdom 4 ABI.
+cmeel-urdfdom>=4,<5
+coal>=3,<4
+trimesh>=4
+rtree>=1
+osqp>=1,<2

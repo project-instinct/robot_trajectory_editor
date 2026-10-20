@@ -113,3 +113,174 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 | `joint_pos` | `(F, N)` | float32 | joint position sequence |
 | `base_pos_w` | `(F, 3)` | float32 | base position, world xyz |
 | `base_quat_w` | `(F, 4)` | float32 | base orientation, world wxyz |
+
+## Trajectory Optimize
+
+**Trajectory Optimize** optimizes the entire edited motion, regardless of the timeline
+selection. Every keyframe anchor fixes all joints and the full base pose exactly.
+Without anchors, every frame is eligible. Successful results update the editor as
+one undo step. Solver/model/validation failures preserve the original data;
+results are also discarded if the trajectory or scene changes during the request.
+
+Install the optional dynamics dependencies in the backend environment:
+
+```bash
+pip install -r robot_trajectory_editor/backend/requirements-trajectory-optimize.txt
+```
+
+Trajectory Optimize uses Pinocchio inverse dynamics, a cubic Hermite configuration curve,
+and the original fixed `dt = 1 / framerate`. Every free frame configuration and
+all internal node velocities participate in the optimization; fixed keyframe
+configurations are omitted from the decision vector. The objective stays close
+to the edited configuration sequence.
+
+Support/contact forces are enabled. **Terrain friction μ** in the Operations
+panel defaults to **0.7** and accepts any finite nonnegative value. The API field
+is `friction`, also defaulting to `0.7`. No contact labels are required: collision
+geometry within `1e-4` m of the terrain supplies candidate point contacts. Each
+uses a unilateral force and a four-ray pyramid inside the Coulomb friction cone.
+OSQP distributes these forces together with bounded joint torques to explain
+inverse dynamics. The remaining floating-base force must vanish, and joint
+torques must satisfy the available URDF effort limits. Geometry penetration is
+allowed only during the search; output must pass non-penetration validation.
+This is a point-support model: it does not impose a sticking/sliding schedule,
+no-slip constraints, or a frictional dissipation law.
+
+The contact solver uses L-BFGS-B penalty stages over the whole trajectory, with
+constraint samples at both interval endpoints and two interior Gauss points.
+Free nodal velocities start from the reference finite differences clipped to the
+URDF velocity limits, and free positions start clipped to the position limits;
+fixed keyframes are never changed. Sample evaluation is distributed over forked
+worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain and up to
+16 on flat ground) because independent interval blocks dominate the runtime.
+Penalties guide the search; they do not relax the acceptance tolerances.
+The pool uses `fork` so workers inherit the loaded model and terrain; set
+`TRAJECTORY_OPTIMIZE_WORKERS=1` to force serial evaluation. Trajectory Optimize has a 45-second
+computation budget, checked between samples. A check
+or model setup already in progress can slightly overrun that budget. A timeout
+is a failure and never applies a partial result. This budget is **not a claim of
+successful trajectory optimization within 45 seconds**; see the measured limitations below.
+
+The model must provide inertial data for physical bodies and collision geometry,
+with a complete one-to-one mapping between trajectory joints and movable URDF joints. Revolute,
+continuous and prismatic joints are supported; mimic and other joint types report
+an unsupported-model diagnostic. Empty fixed sensor/coordinate frames may omit
+inertial data. Non-penetration uses the supplied URDF collision shapes; visual
+meshes are not substituted for collision geometry. Available URDF position,
+velocity and effort limits are enforced. Missing meshes or inertial data produce an error.
+The currently edited terrain is sent in world coordinates. Without terrain,
+collision geometry must stay above the `z=0` ground halfspace. Loaded OBJ geometry
+is treated as triangle surfaces. A watertight mesh with positive winding volume
+also excludes its interior; a negative-volume mesh encloses free space (for
+example a scanned room), so its interior is not treated as solid. Open meshes do
+not define an underground solid volume. Loaded-terrain surface
+intersections are also checked independently; coincident touching mesh surfaces
+can be rejected conservatively when a penetration depth is unavailable.
+
+Validation evaluates the reconstructed curve at **17 samples per frame interval**,
+including both one-sided endpoint accelerations, after converting the result to
+the float32 representation retained by the editor. Tolerances are: base dynamics
+0.1% of robot weight in N (and weight times a 1 m reference length in Nm), with
+a `1e-3` N/Nm floor to account for float32 differentiation; position `1e-6` m/rad;
+joint velocity `1e-6` m/s or rad/s;
+effort `1e-4` N/Nm; penetration `1e-5` m; quaternion norm error `1e-6`.
+The response reports measured residuals and tolerances. These are numerical
+sample checks, not a mathematical certificate for every instant. Velocities and
+torques are internal to Trajectory Optimize; the saved NPZ schema is unchanged.
+
+Pinocchio supplies articulated dynamics derivatives. The support penalty uses
+an envelope gradient of the force-allocation problem: external-force dynamics
+derivatives are combined with an analytic six-dimensional contact-pose wrench
+derivative, avoiding repeated QP solves or per-coordinate distance queries.
+Collision derivatives use contact point Jacobians. A conservative coarse AABB
+grid skips exact terrain queries for shapes provably more than 1 mm away. Terrain containment queries are batched, and collision
+values/derivatives are reused for the same candidate; final validation performs
+fresh collision queries. Rotation-vector coordinates must remain below
+`2*pi - 0.01` in norm to avoid a singular chart.
+
+Remote regression tests cover fixed standing support, repair of simple ground
+penetration, friction and actuator limits, floating-base dynamics derivatives,
+contact penalty derivatives, terrain containment, exact keyframes, failure
+preservation, and single-step undo. Successful real-model free-flight checks
+from the earlier contact-free implementation do **not** establish supported
+whole-motion performance. The Python-only `friction=None` path retains that
+contact-free formulation for regression/benchmark comparisons; the editor uses
+support forces.
+
+For the project-local test installation on that host, activate `omniretargeting`
+and run `.venv-processing/bin/python` from `/data/Projects/robot_trajectory_editor`.
+The shared conda environment has not been modified. To launch with those
+dependencies, run `source .venv-processing/bin/activate` before `./launch.sh`.
+
+### Trajectory Optimize performance benchmark
+
+`scripts/benchmark_trajectory_optimize.py` measures the first 750 frames of a real NPZ
+without keyframes, preserving its original frame rate. Run it on the configured
+compute host with the optimizer Python environment:
+
+```bash
+# Evaluate contact constraints and their gradient:
+timeout 120s .venv-processing/bin/python scripts/benchmark_trajectory_optimize.py \
+  /path/to/motion.npz /path/to/robot.urdf --terrain /path/to/terrain.obj
+# Run the actual solver with configurable friction:
+timeout 120s .venv-processing/bin/python scripts/benchmark_trajectory_optimize.py \
+  /path/to/motion.npz /path/to/robot.urdf --terrain /path/to/terrain.obj \
+  --mode solve --iterations 40 --friction 0.7
+```
+
+Omit `--terrain` for the default ground. `--frames` selects a prefix without
+changing the source frame rate. `--contact-free` is available for historical
+solver comparisons. The script reports setup, completed objective evaluations,
+validation success or the failure diagnostic. Original files are never modified.
+
+Test data on `ziwen-galaxea-desktop-rustdesk`:
+
+- Nokov G1: `~/Datasets/NoKov-Marslab-Motions-instinctnpz/20251114_50cm_diveRoll4_highClimb_jumpSit_rollVault/`
+  (`50cmBoxes_noWall/*.npz` with `50cmboxes_noWall.stl`, 90 fps, 29 joints). The STL
+  is converted to OBJ for the app/benchmark.
+- Kengo: `~/Datasets/HiPhi_selected/kengo_retargeted_20260910/motions/` with
+  `kengo_with_fist.urdf` and default flat ground, 90 fps, 23 joints.
+- Robot URDF for G1: `~/Projects/project-instinct/instinctlab3/source/instinctlab/instinctlab/assets/resources/unitree_g1/urdf/g1_29dof_torsobase_popsicle.urdf`
+- μ = 0.7, no fixed keyframes for these benchmarks.
+
+Solver runs with the 45-second budget, μ = 0.7:
+
+| Motion prefix | Frame rate | Result |
+|---|---:|---|
+| Nokov `jumpsit2`, 750 of 967 frames, 50 cm boxes | 90 fps | 45.03 s timeout. Initial dynamics 787 N, effort 403 Nm. Near the budget: dynamics 406 N, effort 264 Nm, clearance 8 mm, velocity 0. No result applied |
+| Nokov `rollVault11`, 750 of 942 frames, 50 cm boxes | 90 fps | 45.03 s timeout. Initial dynamics 404 N, effort 87 Nm. Near the budget: dynamics 434 N, effort 238 Nm, clearance 2 mm. No result applied |
+| Kengo `vault_0068`, 750 of 1310 frames, flat ground | 90 fps | Optimizer terminated on stage iteration limits after 27.5 s; best base-dynamics residual 295 N (tolerance 0.41 N). No result applied |
+
+Acceptance tolerances are 0.1% of body weight for dynamics (0.33–0.41 N here),
+`1e-4` Nm for effort, `1e-5` m for penetration, and `1e-6` for velocity. The
+best observed mid-search iterates are still orders of magnitude above these.
+
+### Feasibility audit
+
+`scripts/audit_feasibility.py` runs the same collocation samples and support-force
+allocation as Trajectory Optimize, but skips the optimizer. It reports reference residuals
+and how many samples have inferred contacts. Use `--smooth 21 --align` to apply a
+0.23 s Savitzky-Golay smoothing and a smoothed ground-alignment offset, matching
+what a retargeting repair would need to do before the dynamics are plausible.
+
+Reference audits (smoothed + aligned), μ = 0.7:
+
+| Motion | Frames | Contact-free samples (raw) | Max dynamics | Max effort | Max penetration |
+|---|---:|---:|---:|---:|---:|
+| Nokov `jumpsit2` | 967 | 23% | 1,391 N | 199 Nm | 14 mm |
+| Nokov `rollVault11` | 942 | 90% | 2,653 N | 427 Nm | 20 mm |
+| Nokov `highClimbRight1` | 1,199 | 72% | 2,174 N | 986 Nm | 30 mm |
+| Nokov `diveroll4` | 751 | 92% | 2,463 N | 532 Nm | 15 mm |
+| Kengo `walk_0052` | 5,549 | ~100% | 4,586 N | 213 Nm | 8 mm |
+| Kengo `run_0148` | 5,438 | ~100% | 3,705 N | 392 Nm | 9 mm |
+| Kengo `vault_0068` | 1,310 | ~100% | 4,396 N | 150 Nm | 4 mm |
+
+Without smoothing/alignment the raw references are much worse (for example,
+Nokov `rollVault11` reaches 33 kN base residual and 3.9 kNm effort violation).
+The Kengo references float 1–55 mm above `z=0`; at the Trajectory Optimize contact
+threshold of `1e-4` m almost no contacts are inferred until the ground is
+aligned. Even after smoothing and alignment, every reference is far outside the
+actuator and base-dynamics tolerances. These motions are kinematically retargeted,
+not physically feasible references, so Trajectory Optimize has to change them
+substantially rather than make a small correction. Whether a feasible nearby
+trajectory exists is still an open solver question.

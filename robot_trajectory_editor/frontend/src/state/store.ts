@@ -44,6 +44,7 @@ export interface StoreState {
   /** Replace the active trajectory in place while keeping the undo history, so
    *  the replacement (e.g. chopping segments) stays a single Ctrl+Z step. */
   replaceTrajectory: (t: Trajectory) => void
+  applyProcessedTrajectory: (t: Trajectory) => void
   setTrajectorySourceName: (name: string | null) => void
   /** Capture the current trajectory before an in-place user edit. */
   beginTrajectoryEdit: () => void
@@ -117,6 +118,13 @@ export const useStore = create<StoreState>((set, get) => ({
     baseTransformSource: null,
     baseTransformOrigin: null,
     trajectoryVersion: s.trajectoryVersion + 1,
+  })),
+  applyProcessedTrajectory: (t) => set(s => ({
+    trajectory: t,
+    undoStack: [...s.undoStack, s.trajectory.clone()].slice(-100),
+    trajectoryVersion: s.trajectoryVersion + 1,
+    isPlaying: false,
+    baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
   })),
   setTrajectorySourceName: (name) => set({ trajectorySourceName: name }),
   beginTrajectoryEdit: () => set(s => ({

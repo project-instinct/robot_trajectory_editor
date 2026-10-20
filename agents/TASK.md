@@ -85,6 +85,17 @@ This is the source code of a web-based robot trajectory editor. It allows users 
         - When the "Apply" button is clicked, the editor should chop those segments from the entire trajectory, and only keep the selected segments in the trajectory.
             - If resulting in multiple segments, the editor should put them into different trajectory files, and save the files to the same folder as the original trajectory file, with the suffix "_segment_1", "_segment_2", etc. added to the original file name.
 
+    - "Trajectory Optimize": Run model-based optimization of the entire edited trajectory under the available robot and terrain constraints.
+
+        - Add a "Trajectory Optimize" button to this operations block. Clicking it starts optimization of the loaded trajectory using the loaded robot model and terrain (or the default ground plane).
+        - Always optimize across the entire trajectory. Every assigned keyframe is a fixed constraint, regardless of where it occurs; keyframes do not limit the optimization range. If there are no keyframes, all frames may be optimized.
+        - Keep the robot configuration at each assigned keyframe exactly equal to its pre-processing value: all joint positions, world-frame base position, and world-frame base orientation. Remove these fixed configuration values from the optimization variables. The configuration at every non-keyframe frame remains eligible for optimization.
+        - Preserve frame count, frame rate, joint names, and the existing `.npz` trajectory format. The optimizer may use internal velocities and controls as needed. Treat the existing edited trajectory as the reference to stay close to when multiple feasible solutions exist.
+        - Use a model-based constrained optimization method, with direct collocation as the recommended starting approach. Enforce the robot equations of motion, available joint position/velocity and actuator limits, valid base orientation, and non-penetration of the loaded terrain or default ground. The current pipeline has no contact information: do not require contact labels or add contact-force or friction constraints. The solver must honor the fixed time between frames and must not relax keyframe constraints.
+        - Check the resulting trajectory against the enforced model and non-penetration constraints, including behavior between optimization nodes rather than only at keyframes. Report success only when the result meets stated numerical tolerances; display the residual or violated constraint when it does not.
+        - If the required model data are missing, the fixed keyframes are infeasible under the enforced constraints, the solver fails, or validation fails, show a clear diagnostic and leave the original trajectory unchanged. On success, apply the result as one undoable edit and update the timeline, robot state panel, and 3D view.
+        - Direct collocation background: [MIT Underactuated Robotics, Trajectory Optimization](https://underactuated.mit.edu/trajopt.html).
+
 - On the bottom, there should be a drag-and-drop timeline for editing the joint position sequence and robot position sequence when selected. Users can add, remove, and modify keyframes in the timeline.
 
     - Double-clicking the timeline adds a keyframe anchor at the clicked frame.

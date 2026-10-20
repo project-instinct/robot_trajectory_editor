@@ -1,6 +1,7 @@
 import argparse
 import glob
 import io
+import math
 import os
 import tempfile
 import shutil
@@ -8,6 +9,7 @@ import sys
 
 from flask import Flask, request, jsonify, send_file, abort
 from npz_io import parse_npz, serialize_npz
+from trajectory_optimize import TrajectoryOptimizeError, optimize_trajectory
 
 app = Flask(__name__)
 
@@ -236,6 +238,40 @@ def parse_trajectory_endpoint():
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/trajectory/optimize", methods=["POST"])
+def optimize_trajectory_endpoint():
+    payload = request.get_json()
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Trajectory Optimize requires a JSON object."}), 400
+    root = _current_urdf_dir()
+    relative = payload.get("urdf_path")
+    if relative is not None:
+        if not isinstance(relative, str) or not root:
+            return jsonify({"error": "No robot directory is loaded."}), 400
+        path = os.path.abspath(os.path.join(root, relative))
+        if not _is_within(path, [os.path.abspath(root)]) or not os.path.isfile(path):
+            return jsonify({"error": "Selected robot URDF is unavailable."}), 400
+    elif ROBOT_URDF_PATH and os.path.isfile(ROBOT_URDF_PATH):
+        path = ROBOT_URDF_PATH
+    else:
+        return jsonify({"error": "Select a robot URDF before Trajectory Optimize."}), 400
+    try:
+        terrain = payload.get("terrain_obj")
+        if terrain is not None and not isinstance(terrain, str):
+            raise TrajectoryOptimizeError("Terrain must be OBJ text or null for the default ground.")
+        friction = payload.get("friction", 0.7)
+        if type(friction) not in (int, float) or not math.isfinite(friction) or friction < 0:
+            raise TrajectoryOptimizeError("Terrain friction must be a finite nonnegative number.")
+        result = optimize_trajectory(payload["trajectory"], payload.get("keyframes", []),
+                                    path, terrain, resolve_mesh_path, friction=friction)
+        return jsonify(result)
+    except (TrajectoryOptimizeError, KeyError, TypeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 422
+    except Exception as error:
+        app.logger.exception("Trajectory Optimize failed")
+        return jsonify({"error": f"Trajectory Optimize failed: {error}"}), 500
 
 
 @app.route("/api/trajectory/serialize", methods=["POST"])

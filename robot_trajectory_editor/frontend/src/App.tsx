@@ -84,6 +84,7 @@ function App() {
   // (Re)load the robot only when the URDF source changes, not on trajectory load.
   useEffect(() => {
     let cancelled = false
+    setRobotModelLoaded(false)
     getRobotUrdfUrl(urdfRelPath).then(url => {
       const loader = new URDFLoader()
       loader.packages = (pkg: string) => getAssetUrl(pkg)
@@ -242,7 +243,7 @@ function App() {
           />
           <TargetPanel />
           <TransformPanel />
-          <OpsPanel />
+          <OpsPanel urdfPath={urdfRelPath} />
         </div>
         <div style={handleStyle} onPointerDown={startResize('left')} />
         <div style={viewportWrapperStyle}>
