@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.optimize import minimize
 
-from trajectory_optimize import GAUSS_POINTS, TrajectoryOptimizeError, hermite
+from trajectory_optimize import CONTACT_MARGIN, GAUSS_POINTS, TrajectoryOptimizeError, hermite
 
 _WORKER = {}
 
@@ -192,6 +192,53 @@ class ContactObjective:
         return loss, np.r_[gx[problem.free].ravel(), gv.ravel()]
 
 
+def stance_offset(problem, positions, check_time):
+    """Fit a C2 base correction to nearby support phases, including seated support.
+
+    Bounding-sphere clearance bounds are safe for collision culling but cannot
+    measure a ground-alignment offset. Use exact distances here, and a coarse
+    spline so switching the nearest shape cannot inject framewise acceleration.
+    This only initializes the trajectory; contacts still use the usual 1 mm gap.
+    """
+    from scipy.interpolate import BSpline
+    from scipy.ndimage import median_filter
+    from scipy.linalg import null_space
+
+    distances, normals = [], []
+    for position in positions:
+        check_time()
+        distance, normal = problem.robot.clearances(position, return_normals=True, exact=True)
+        distances.append(distance)
+        normals.append(normal)
+    distances, normals = np.asarray(distances), np.asarray(normals)
+    window = min(21, problem.n if problem.n % 2 else problem.n - 1)
+    # The window bridges short hovering gaps within a support phase. Only
+    # nearby, upward-facing surfaces seed the alignment.
+    nearby = median_filter(distances, size=(window, 1), mode='nearest') < .05
+    eligible = nearby & (normals[:, :, 2] > .7)
+    indices = np.argmin(np.where(eligible, distances, np.inf), axis=1)
+    targets = np.zeros(problem.n)
+    for frame in np.flatnonzero(eligible.any(axis=1)):
+        index = indices[frame]
+        targets[frame] = (.5*CONTACT_MARGIN - distances[frame, index]) / normals[frame, index, 2]
+
+    times = np.arange(problem.n) * problem.dt
+    degree = min(3, problem.n-1)
+    # Put knots on trajectory nodes so adding these positions and analytic
+    # velocities reproduces the same spline under Hermite reconstruction.
+    stride = max(degree, round(.3 / problem.dt))
+    knots = np.r_[np.repeat(times[0], degree+1), times[stride:-1:stride],
+                   np.repeat(times[-1], degree+1)]
+    spline = BSpline(knots, np.eye(len(knots)-degree-1), degree)
+    basis = spline(times)
+    fixed = np.setdiff1d(np.arange(problem.n), problem.free)
+    # Fit in the null space so fixed poses remain exactly unchanged without
+    # multiplying the correction by a frame mask that would break continuity.
+    free_basis = null_space(basis[fixed]) if len(fixed) else np.eye(basis.shape[1])
+    coefficients = free_basis @ np.linalg.lstsq(basis @ free_basis, targets, rcond=None)[0]
+    return basis @ coefficients, spline(times, nu=1) @ coefficients
+
+
 def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     objective = ContactObjective(problem, deadline)
     solver = solver or os.environ.get('TRAJECTORY_OPTIMIZE_SOLVER', 'penalty')
@@ -228,23 +275,10 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         smoothed = savgol_filter(x, window, 2, axis=0)
         x[problem.free] = smoothed[problem.free]
     x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-    # The raw normal is available even for non-penetrating shapes; smoothing the
-    # offset avoids frame-to-frame acceleration spikes while preserving contacts.
-    offsets = np.zeros((problem.n, 3))
-    for frame in problem.free:
-        objective.check_time()
-        distances, normals = problem.robot.clearances(x[frame], return_normals=True)
-        index = int(np.argmin(distances))
-        distance, normal = distances[index], normals[index]
-        if distance < 0 or (distance < .05 and normal[2] > .7):
-            norm = normal @ normal
-            if norm > 1e-8:
-                offsets[frame] = (1e-6 - distance) * normal / norm
-    window = min(15, problem.n if problem.n % 2 else problem.n - 1)
-    if window >= 3:
-        offsets = savgol_filter(offsets, window, 2, axis=0)
-    x[problem.free, :3] += offsets[problem.free]
     v = np.gradient(x, problem.dt, axis=0, edge_order=2 if problem.n > 2 else 1)
+    offsets, offset_velocity = stance_offset(problem, x, objective.check_time)
+    x[problem.free, 2] += offsets[problem.free]
+    v[:, 2] += offset_velocity
     v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
     variables = problem.pack(x, v)
     scale = np.r_[np.ones(problem.position_size), np.full(problem.n*problem.d, 1/problem.dt)]

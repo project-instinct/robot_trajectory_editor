@@ -155,8 +155,14 @@ for the base forces and actuator bounds is available with
 yet robust on every motion. Constraint samples are at both interval endpoints and
 two interior Gauss points. Free nodal velocities start from the reference finite
 differences clipped to the URDF velocity limits. Free positions are smoothed
-(Savitzky-Golay) and ground-aligned before the solve; fixed keyframes are never
-changed. `TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and
+(Savitzky-Golay) before the solve. Ground alignment uses exact shape distances:
+a 21-frame median window identifies nearby upward-facing support geometry,
+including seated/body support. A cubic spline with knots about 0.3 seconds apart
+fits the vertical base offset, with zero offset at fixed keyframes. Knots lie on
+trajectory nodes and the spline's analytic velocities are added with its positions,
+so Hermite reconstruction preserves the smooth correction. This only initializes
+the search; candidate contacts still require the 1 mm gap at each sample.
+`TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and
 `TRAJECTORY_OPTIMIZE_MAXITER` tune the warm start and inner iterations. Sample evaluation is distributed over forked
 worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain and up to
 16 on flat ground) because independent interval blocks dominate the runtime.

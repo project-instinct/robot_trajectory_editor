@@ -438,6 +438,56 @@ def test_contact_optimization_repairs_ground_penetration(sphere_urdf):
         assert residual <= result['tolerances'][name]
 
 
+def test_stance_alignment_measures_shape_distance_instead_of_bounding_sphere(sphere_urdf, tmp_path):
+    from pathlib import Path
+    from trajectory_optimize_contacts import stance_offset
+    path = tmp_path / 'foot.urdf'
+    path.write_text(Path(sphere_urdf).read_text().replace(
+        '<sphere radius="0.1"/>', '<box size="0.08 0.04 0.02"/>'))
+    robot = RobotDynamics(str(path), [], None, lambda _: None, friction=.7)
+    reference = np.tile([0., 0., .055, 0., 0., 0.], (40, 1))
+    assert 0 < robot.clearances(reference[0])[0] < .02
+    assert robot.clearances(reference[0], exact=True)[0] == pytest.approx(.045)
+    problem = CollocationProblem(robot, reference, [], 1/90)
+    offset, velocity = stance_offset(problem, reference, lambda: None)
+    corrected = reference.copy()
+    corrected[:, 2] += offset
+    velocities = np.zeros_like(reference)
+    velocities[:, 2] = velocity
+    # A stationary hovering foot becomes supported without injecting motion or
+    # changing the contact margin, and passes the actual dense validator.
+    np.testing.assert_allclose(corrected[:, 2], .0105, atol=1e-12)
+    np.testing.assert_allclose(velocity, 0., atol=1e-12)
+    problem.validate(problem.pack(corrected, velocities))
+
+
+def test_stance_offset_preserves_fixed_pose_and_continuous_acceleration(sphere_urdf):
+    from trajectory_optimize_contacts import stance_offset
+    robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
+    reference = np.tile([0., 0., .14, 0., 0., 0.], (101, 1))
+    problem = CollocationProblem(robot, reference, [50], .01)
+    offset, velocity = stance_offset(problem, reference, lambda: None)
+    assert offset[50] == pytest.approx(0., abs=1e-12)
+    assert offset[0] < -.03
+    # This checks the reconstructed curve, including both sides of each knot
+    # and the fixed pose, rather than just the sampled offset values.
+    for frame in range(1, problem.n-1):
+        left = hermite(offset[frame-1], offset[frame], velocity[frame-1], velocity[frame], problem.dt, 1.)[2]
+        right = hermite(offset[frame], offset[frame+1], velocity[frame], velocity[frame+1], problem.dt, 0.)[2]
+        assert left == pytest.approx(right, abs=1e-8)
+
+
+def test_stance_offset_leaves_distant_flight_unsupported(sphere_urdf):
+    from trajectory_optimize_contacts import stance_offset
+    robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
+    reference = np.tile([0., 0., 2., 0., 0., 0.], (40, 1))
+    problem = CollocationProblem(robot, reference, [], 1/90)
+    offset, velocity = stance_offset(problem, reference, lambda: None)
+    np.testing.assert_array_equal(offset, 0.)
+    np.testing.assert_array_equal(velocity, 0.)
+    assert not robot.contact_geometry[reference[0].tobytes()][0]
+
+
 def test_support_envelope_gradient_matches_finite_difference(sphere_urdf):
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
     state = [np.array([0., 0., .1, .2, -.1, .3]), np.zeros(6), np.array([20., 0., 0., 0., 0., 0.])]

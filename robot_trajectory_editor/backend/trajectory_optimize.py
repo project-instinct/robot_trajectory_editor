@@ -469,7 +469,7 @@ class RobotDynamics:
         gradient[0] += joint_weights @ (supported_dq-raw_dq) @ transform
         return gradient
 
-    def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False):
+    def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False, exact=False):
         from support import cross
         q = self.configuration(x)
         self.pin.updateGeometryPlacements(self.model, self.data, self.geometry, self.geometry_data, q)
@@ -484,9 +484,10 @@ class RobotDynamics:
                 zip(self.geometry.geometryObjects, self.geometry_data.oMg), self.geometry_bounds):
             center = np.asarray(pose.rotation @ local_center + pose.translation)
             # Broad-phase skipping is safe for values and for the contact
-            # search, but the contact-free inequality Jacobian needs exact
-            # derivatives for every row.
-            lower = self.terrain_lower_bound(center, radius) if (penetration_only or not derivatives) else None
+            # search. Alignment offsets and the contact-free inequality
+            # Jacobian need actual distances rather than conservative bounds.
+            lower = (self.terrain_lower_bound(center, radius)
+                     if not exact and (penetration_only or not derivatives) else None)
             cull = lower is not None and lower > 1e-3
             culled.append(cull)
             if cull:
