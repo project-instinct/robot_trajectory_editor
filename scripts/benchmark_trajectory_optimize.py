@@ -41,6 +41,8 @@ def main():
     parser.add_argument('--friction', type=float, default=.7)
     parser.add_argument('--contact-free', action='store_true')
     parser.add_argument('--time-budget', type=float, default=45.)
+    parser.add_argument('--global-worst', action='store_true',
+                        help='log the best parent-merged contact residual and its worst sample')
     args = parser.parse_args()
     payload = parse_npz(args.trajectory.read_bytes())
     for field in ('base_pos_w', 'base_quat_w', 'joint_pos'):
@@ -113,6 +115,45 @@ def main():
                                   'objective': float(value[0]), 'residuals': objective.errors}), flush=True)
                 return value
             trajectory_optimize_contacts.ContactObjective.evaluate = evaluated
+            if args.global_worst:
+                original_parallel = trajectory_optimize_contacts.evaluate_parallel
+                best_score = float('inf')
+                best_dynamics = float('inf')
+
+                def merged(objective, pool, chunks, variables, gradient=True):
+                    nonlocal best_score, best_dynamics
+                    result = original_parallel(objective, pool, chunks, variables, gradient)
+                    score = max(objective.errors[name] / problem.robot.tolerances[name]
+                                for name in objective.errors)
+                    dynamics = objective.errors['dynamics']
+                    improved = []
+                    if score < best_score:
+                        best_score = score
+                        improved.append('score')
+                    if dynamics < best_dynamics:
+                        best_dynamics = dynamics
+                        improved.append('dynamics')
+                    if improved:
+                        sample, axis = np.unravel_index(
+                            np.abs(objective.dynamics_residual).argmax(),
+                            objective.dynamics_residual.shape)
+                        frame, offset = divmod(sample, len(objective.fractions))
+                        fraction = objective.fractions[offset]
+                        x, v = problem.unpack(variables)
+                        q = trajectory_optimize_contacts.hermite(
+                            x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)[0]
+                        problem.robot.clearances(q)
+                        contacts = len(problem.robot.contact_geometry[q.tobytes()][0])
+                        print(json.dumps({'stage': 'global_best', 'elapsed': perf_counter()-started,
+                                          'improved': improved, 'score': score,
+                                          'residuals': objective.errors,
+                                          'worst_dynamics': {'value': float(np.abs(
+                                              objective.dynamics_residual[sample, axis])),
+                                              'frame': int(frame), 'fraction': float(fraction),
+                                              'axis': int(axis), 'contacts': contacts}}), flush=True)
+                    return result
+
+                trajectory_optimize_contacts.evaluate_parallel = merged
             return original_contacts(problem, initial, deadline)
 
         trajectory_optimize_contacts.solve_contacts = contact_solve

@@ -48,6 +48,7 @@ class SupportForces:
             raise ValueError('Terrain friction must be finite and nonnegative.')
         self.effort_limits = np.asarray(effort_limits)
         self.friction = friction
+        self.solvers = {}
         self.coefficients = np.empty(0)
 
     def solve(self, required, point_maps, normals):
@@ -78,13 +79,18 @@ class SupportForces:
         rows, columns = np.triu_indices(count)
         quadratic = csc_matrix((hessian[rows, columns], (rows, columns)), shape=(count, count))
         linear = -matrix.T @ required
-        # A cached solver carries primal/dual warm starts and adaptive rho from
-        # earlier samples. Each sample must have the same allocation regardless
-        # of evaluation order or which forked worker receives it.
-        solver = osqp.OSQP()
-        solver.setup(P=quadratic, q=linear, A=eye(count, format='csc'), l=lower, u=upper,
-                     verbose=False, eps_abs=1e-7, eps_rel=1e-7, max_iter=800,
-                     polishing=False)
+        # Disable stateful warm starts, matrix scaling, and rho adaptation so
+        # a reused workspace solves every sample from the same initial state.
+        if count not in self.solvers:
+            solver = osqp.OSQP()
+            solver.setup(P=quadratic, q=linear, A=eye(count, format='csc'), l=lower, u=upper,
+                         verbose=False, eps_abs=1e-7, eps_rel=1e-7, max_iter=800,
+                         polishing=False, warm_starting=False, adaptive_rho=False, scaling=0,
+                         rho=1.)
+            self.solvers[count] = solver
+        else:
+            solver = self.solvers[count]
+            solver.update(Px=quadratic.data, q=linear, l=lower, u=upper)
         result = solver.solve(raise_error=False)
         if result.info.status_val in (1, 2) and result.x is not None and np.isfinite(result.x).all():
             solution = result.x

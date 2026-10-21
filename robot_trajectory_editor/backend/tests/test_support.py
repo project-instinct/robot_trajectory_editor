@@ -56,9 +56,10 @@ def test_multiple_contacts_balance_moment(monkeypatch):
         actual = solver.solve(np.array([0, 0, 100, 0, moment, 0]),
                               [point_map([-1, 0, 0]), point_map([1, 0, 0])],
                               [[0, 0, 1], [0, 0, 1]])
-        # A fresh QP is independent of the preceding contact allocation.
+        # A cold-started QP is independent of the preceding contact allocation.
         for result, baseline in zip((*actual, solver.coefficients), expected):
             np.testing.assert_allclose(result, baseline, atol=1e-10, rtol=0)
+    assert len(solver.solvers) == 1
     monkeypatch.setattr('support.osqp.OSQP.solve',
                         lambda self, **kwargs: SimpleNamespace(
                             x=np.zeros(8), info=SimpleNamespace(
