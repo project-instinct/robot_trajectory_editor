@@ -295,6 +295,9 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             best = candidate, variables.copy(), dict(objective.errors)
         return candidate
 
+    # The early raw-input probe stopped at its first violation. Score the
+    # smoothed candidate itself before comparing it with later iterates.
+    evaluate(variables, gradient=False)
     remember(variables)
     force_scale = problem.robot.tolerances['dynamics'] / 1e-3
 
