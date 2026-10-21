@@ -388,7 +388,8 @@ def test_contact_forces_are_unavailable_above_terrain(sphere_urdf):
 
 
 def test_contact_penalty_gradient_matches_finite_difference(sphere_urdf):
-    from trajectory_optimize_contacts import ContactObjective
+    from trajectory_optimize_contacts import (ContactObjective, _WORKER, evaluate_parallel,
+                                              evaluation_pool)
     from scipy.optimize._numdiff import approx_derivative
     from time import perf_counter
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
@@ -400,6 +401,30 @@ def test_contact_penalty_gradient_matches_finite_difference(sphere_urdf):
     numerical = approx_derivative(lambda x: objective.evaluate(x, gradient=False)[0], variables,
                                   method='3-point', abs_step=1e-6).ravel()
     np.testing.assert_allclose(gradient, numerical, atol=2e-5, rtol=2e-5)
+    variables[0] += 2e-4
+    variables[problem.position_size] += .005
+    serial = []
+    for _ in range(3):
+        value, derivative = objective.evaluate(variables)
+        serial.append((value, derivative.copy(), objective.dynamics_residual.copy(),
+                       objective.effort_residual.copy()))
+    _WORKER['objective'] = objective
+    pool = evaluation_pool(2)
+    assert pool is not None
+    try:
+        parallel = []
+        for _ in range(3):
+            value, derivative = evaluate_parallel(objective, pool, [[0], [1]], variables)
+            parallel.append((value, derivative.copy(), objective.dynamics_residual.copy(),
+                             objective.effort_residual.copy()))
+    finally:
+        pool.close()
+        pool.join()
+    # Sum order can round differently, but repeated QPs and their residuals
+    # should agree much more closely than the finite-difference step above.
+    for actual in serial + parallel:
+        for observed, baseline in zip(actual, serial[0]):
+            np.testing.assert_allclose(observed, baseline, atol=1e-8, rtol=1e-12)
 
 
 def test_contact_optimization_repairs_ground_penetration(sphere_urdf):

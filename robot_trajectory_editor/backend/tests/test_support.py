@@ -1,5 +1,6 @@
 import os
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -41,15 +42,32 @@ def test_contact_cannot_pull_or_exceed_friction(required):
     assert np.linalg.norm(forces[0, :2]) <= .5*forces[0, 2] + 1e-10
 
 
-def test_multiple_contacts_balance_moment_and_reuse_solver():
+def test_multiple_contacts_balance_moment(monkeypatch):
     solver = SupportForces([], .5)
+    repeated = []
     for moment in [-20., 20.]:
         residual, forces = solver.solve(np.array([0, 0, 100, 0, moment, 0]),
                                         [point_map([-1, 0, 0]), point_map([1, 0, 0])],
                                         [[0, 0, 1], [0, 0, 1]])
         np.testing.assert_allclose(residual, 0, atol=1e-4)
         assert np.all(forces[:, 2] >= 0)
-    assert len(solver.solvers) == 1
+        repeated.append((residual, forces, solver.coefficients.copy()))
+    for moment, expected in zip([-20., 20.], repeated):
+        actual = solver.solve(np.array([0, 0, 100, 0, moment, 0]),
+                              [point_map([-1, 0, 0]), point_map([1, 0, 0])],
+                              [[0, 0, 1], [0, 0, 1]])
+        # A fresh QP is independent of the preceding contact allocation.
+        for result, baseline in zip((*actual, solver.coefficients), expected):
+            np.testing.assert_allclose(result, baseline, atol=1e-10, rtol=0)
+    monkeypatch.setattr('support.osqp.OSQP.solve',
+                        lambda self, **kwargs: SimpleNamespace(
+                            x=np.zeros(8), info=SimpleNamespace(
+                                status_val=7, status='maximum iterations reached')))
+    residual, forces = solver.solve(np.array([0, 0, 100, 0, 20, 0]),
+                                    [point_map([-1, 0, 0]), point_map([1, 0, 0])],
+                                    [[0, 0, 1], [0, 0, 1]])
+    np.testing.assert_allclose(residual, repeated[1][0], atol=1e-4)
+    np.testing.assert_allclose(forces, repeated[1][1], atol=1e-4)
 
 
 def test_actuator_limit_restricts_support_distribution():

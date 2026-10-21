@@ -5,6 +5,7 @@ best explain inverse dynamics. Its residual is retained: infeasible support is
 never replaced with an arbitrary floating-base wrench.
 """
 import numpy as np
+from scipy.optimize import lsq_linear
 from scipy.sparse import csc_matrix, eye
 import osqp
 
@@ -47,7 +48,6 @@ class SupportForces:
             raise ValueError('Terrain friction must be finite and nonnegative.')
         self.effort_limits = np.asarray(effort_limits)
         self.friction = friction
-        self.solvers = {}
         self.coefficients = np.empty(0)
 
     def solve(self, required, point_maps, normals):
@@ -70,30 +70,39 @@ class SupportForces:
         count = matrix.shape[1]
         lower = np.r_[np.zeros(force_count), -self.effort_limits]
         upper = np.r_[np.full(force_count, np.inf), self.effort_limits]
+        regularization = 1e-10
         hessian = matrix.T @ matrix
-        hessian.flat[::count+1] += 1e-10
+        hessian.flat[::count+1] += regularization
         # Explicit upper-triangular entries preserve the update pattern when a
         # coefficient becomes zero as the contact geometry changes.
         rows, columns = np.triu_indices(count)
         quadratic = csc_matrix((hessian[rows, columns], (rows, columns)), shape=(count, count))
         linear = -matrix.T @ required
-        if count not in self.solvers:
-            solver = osqp.OSQP()
-            # The force residual only needs enough accuracy to drive the outer
-            # penalty below the model tolerances; tightening ADMM far beyond
-            # that made every dynamics sample several times more expensive.
-            solver.setup(P=quadratic, q=linear, A=eye(count, format='csc'), l=lower, u=upper,
-                         verbose=False, eps_abs=1e-7, eps_rel=1e-7, max_iter=800,
-                         polishing=False, time_limit=.02)
-            self.solvers[count] = solver
-        else:
-            solver = self.solvers[count]
-            solver.update(Px=quadratic.data, q=linear, l=lower, u=upper)
+        # A cached solver carries primal/dual warm starts and adaptive rho from
+        # earlier samples. Each sample must have the same allocation regardless
+        # of evaluation order or which forked worker receives it.
+        solver = osqp.OSQP()
+        solver.setup(P=quadratic, q=linear, A=eye(count, format='csc'), l=lower, u=upper,
+                     verbose=False, eps_abs=1e-7, eps_rel=1e-7, max_iter=800,
+                     polishing=False)
         result = solver.solve(raise_error=False)
-        if result.x is None or not np.isfinite(result.x).all():
-            raise ValueError(f'Support-force solve failed: {result.info.status}')
+        if result.info.status_val in (1, 2) and result.x is not None and np.isfinite(result.x).all():
+            solution = result.x
+        else:
+            # Ill-conditioned contact maps can exhaust ADMM iterations with a
+            # large dual residual. BVLS solves the same regularized bounded
+            # least-squares problem instead of returning that unfinished QP.
+            free = lower < upper
+            fallback = lsq_linear(
+                np.vstack([matrix[:, free], np.sqrt(regularization)*np.eye(count)[:, free]]),
+                np.r_[required, np.zeros(count)], bounds=(lower[free], upper[free]),
+                method='bvls', tol=1e-10)
+            if not fallback.success or not np.isfinite(fallback.x).all():
+                raise ValueError(f'Support-force solve failed: {result.info.status}')
+            solution = np.zeros(count)
+            solution[free] = fallback.x
         # Enforce the cone even when the inner QP stops with finite precision.
-        coefficients = np.maximum(result.x[:force_count], 0.)
+        coefficients = np.maximum(solution[:force_count], 0.)
         self.coefficients = coefficients.copy()
         forces = np.array([ray @ coefficients[4*i:4*i+4] for i, ray in enumerate(rays)])
         return required - contacts @ coefficients, forces

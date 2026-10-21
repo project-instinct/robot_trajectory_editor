@@ -47,6 +47,30 @@ def evaluation_pool(workers):
         return None
 
 
+def evaluate_parallel(objective, pool, chunks, variables, gradient=True):
+    results = pool.map(_worker_evaluate,
+                       [(chunk, variables, gradient, objective.penalty, objective.dynamics_rho,
+                         objective.effort_rho, objective.deadline,
+                         objective.dynamics_multipliers, objective.effort_multipliers)
+                        for chunk in chunks])
+    value = sum(result[0] for result in results)
+    derivatives = sum(result[1] for result in results) if gradient else None
+    problem = objective.problem
+    x, v = problem.unpack(variables)
+    position_error = x - problem.reference
+    velocity_error = v - objective.velocity_reference
+    value += float(np.sum(position_error*position_error)
+                   + objective.velocity_weight*np.sum(velocity_error*velocity_error))
+    if gradient:
+        derivatives += np.r_[2*position_error[problem.free].ravel(),
+                             (2*objective.velocity_weight*velocity_error).ravel()]
+    objective.errors = {name: max(result[2][name] for result in results)
+                        for name in objective.errors}
+    objective.dynamics_residual = sum(result[3] for result in results)
+    objective.effort_residual = sum(result[4] for result in results)
+    return value, derivatives
+
+
 class ContactObjective:
     def __init__(self, problem, deadline):
         self.problem, self.deadline = problem, deadline
@@ -86,9 +110,15 @@ class ContactObjective:
         problem.prepare_collision_cache(variables)
         x, v = problem.unpack(variables)
         velocity_error = v - self.velocity_reference
-        gx, gv = 2*(x-problem.reference), 2*self.velocity_weight*velocity_error
-        loss = float(np.sum((x-problem.reference)**2)
-                     + self.velocity_weight*np.sum(velocity_error*velocity_error))
+        if intervals is None:
+            gx, gv = 2*(x-problem.reference), 2*self.velocity_weight*velocity_error
+            loss = float(np.sum((x-problem.reference)**2)
+                         + self.velocity_weight*np.sum(velocity_error*velocity_error))
+        else:
+            # The reference term is global, so the caller adds it once after
+            # merging interval-local worker results.
+            gx, gv = np.zeros_like(x), np.zeros_like(v)
+            loss = 0.
         self.errors = dict.fromkeys(robot.tolerances, 0.)
         force_scale = robot.tolerances['dynamics'] / 1e-3
         frames = range(problem.n - 1) if intervals is None else intervals
@@ -181,18 +211,7 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     def evaluate(variables, gradient=True):
         if pool is None:
             return objective.evaluate(variables, gradient=gradient)
-        results = pool.map(_worker_evaluate,
-                           [(chunk, variables, gradient, objective.penalty, objective.dynamics_rho,
-                             objective.effort_rho, objective.deadline,
-                             objective.dynamics_multipliers, objective.effort_multipliers)
-                            for chunk in chunks])
-        value = sum(result[0] for result in results)
-        derivatives = sum(result[1] for result in results) if gradient else None
-        objective.errors = {name: max(result[2][name] for result in results)
-                            for name in objective.errors}
-        objective.dynamics_residual = sum(result[3] for result in results)
-        objective.effort_residual = sum(result[4] for result in results)
-        return value, derivatives
+        return evaluate_parallel(objective, pool, chunks, variables, gradient)
     x, v = problem.unpack(initial)
     # Joint limits apply to the nodal variables, which are independent of the
     # reference positions. Project the initial guess so the search does not
