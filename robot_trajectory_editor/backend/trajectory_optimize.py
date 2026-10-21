@@ -25,6 +25,10 @@ GAUSS_POINTS = (0.5 - np.sqrt(3) / 6, 0.5 + np.sqrt(3) / 6)
 # much tighter. Retargeted feet routinely sit a fraction of a millimetre above
 # the surface after smoothing.
 CONTACT_MARGIN = 1e-3
+# The fixed search schedule seeds contacts within this proximity, projected
+# onto the terrain. It never relaxes the 1 mm live inference used by validation.
+CONTACT_SCHEDULE_PROXIMITY = 5e-2
+CONTACT_SCHEDULE_NORMAL_Z = .7
 
 
 def read_trajectory(payload, keyframes):
@@ -220,6 +224,9 @@ class RobotDynamics:
             from support import SupportForces
             self.support = SupportForces(self.effort, friction)
         self.contact_geometry = {}
+        # The presence of an entry alone cannot tell whether a cached mapping
+        # used an inferred 1 mm contact or a fixed search schedule.
+        self._contact_request = {}
         self._force_cache = None
 
     @staticmethod
@@ -320,21 +327,68 @@ class RobotDynamics:
         v[self.v_indices], a[self.v_indices] = xd[6:], xdd[6:]
         return q, v, a
 
+    @staticmethod
+    def contact_request(schedule):
+        """Hashable identity of one fixed contact-schedule sample."""
+        if schedule is None:
+            return None
+        return tuple((int(index), *(float(v) for v in point), *(float(v) for v in normal))
+                     for index, point, normal in schedule)
+
+    def infer_contact_schedule(self, x, proximity=CONTACT_SCHEDULE_PROXIMITY):
+        """Project nearby upward-facing geometry contacts onto the terrain.
+
+        Each entry stores the collision-geometry index, the terrain contact
+        point expressed in the parent joint frame, and the world surface
+        normal. The local point lets the support mapping follow the link pose
+        during the solve, while the schedule itself stays fixed.
+        """
+        q = self.configuration(x)
+        self.pin.updateGeometryPlacements(self.model, self.data, self.geometry, self.geometry_data, q)
+        schedule = []
+        for index, ((geometry, pose), (local_center, radius)) in enumerate(
+                zip(zip(self.geometry.geometryObjects, self.geometry_data.oMg), self.geometry_bounds)):
+            center = np.asarray(pose.rotation @ local_center + pose.translation)
+            lower = self.terrain_lower_bound(center, radius, margin=proximity)
+            if lower is not None and lower > proximity:
+                continue
+            result = self.coal.DistanceResult()
+            distance = self.coal.distance(geometry.geometry,
+                                          self.coal.Transform3s(pose.rotation, pose.translation),
+                                          self.terrain, self.coal.Transform3s(),
+                                          self.distance_request, result)
+            nearest = np.asarray(result.getNearestPoint1())
+            sign = 1.
+            if (self.terrain_mesh is not None and self.containment and distance > 0
+                    and self.terrain_mesh.contains(nearest.reshape(1, 3))[0]):
+                sign = -1.
+            normal = sign * -np.asarray(result.normal)
+            if (sign*distance > proximity or not np.isfinite(normal).all()
+                    or normal[2] <= CONTACT_SCHEDULE_NORMAL_Z):
+                continue
+            joint_pose = self.data.oMi[geometry.parentJoint]
+            terrain_point = np.asarray(result.getNearestPoint2())
+            local_point = joint_pose.rotation.T @ (terrain_point - joint_pose.translation)
+            schedule.append((index, local_point, normal))
+        return schedule
+
     def required_forces(self, x, xd, xdd):
         q, v, a = self.kinematics(x, xd, xdd)
         tau = self.pin.rnea(self.model, self.data, q, v, a)
         return np.r_[tau[:6], tau[self.v_indices]]
 
-    def forces(self, x, xd, xdd):
+    def forces(self, x, xd, xdd, schedule=None):
         if self.support is None:
             return self.required_forces(x, xd, xdd)
-        key = np.concatenate((x, xd, xdd)).tobytes()
+        request = self.contact_request(schedule)
+        key = np.concatenate((x, xd, xdd)).tobytes(), request
         if self._force_cache is not None and self._force_cache[0] == key:
             return self._force_cache[1].copy()
         geometry_key = x.tobytes()
-        if geometry_key not in self.contact_geometry:
-            self.clearances(x)
-        mappings, normals, _ = self.contact_geometry[geometry_key]
+        if (geometry_key not in self.contact_geometry
+                or self._contact_request.get(geometry_key) != request):
+            self.clearances(x, schedule=schedule)
+        mappings, normals = self.contact_geometry[geometry_key][:2]
         adjusted, _ = self.support.solve(self.required_forces(x, xd, xdd), mappings, normals)
         self._support_coefficients = self.support.coefficients.copy()
         self._force_cache = key, adjusted.copy()
@@ -404,7 +458,7 @@ class RobotDynamics:
         order = np.r_[np.arange(6), self.v_indices]
         return dx[order], dxd[order], dxdd[order]
 
-    def support_penalty_gradient(self, state, weights):
+    def support_penalty_gradient(self, state, weights, schedule=None):
         """Envelope gradient of the support QP's dynamics/effort residual.
 
         At its optimum, derivatives of the allocated forces cancel by the KKT
@@ -413,8 +467,14 @@ class RobotDynamics:
         """
         from support import cross, friction_rays, skew
         x, xd, xdd = state
+        request = self.contact_request(schedule)
+        entry = self.contact_geometry.get(x.tobytes())
+        if entry is None or self._contact_request.get(x.tobytes()) != request:
+            self.clearances(x, schedule=schedule)
+            entry = self.contact_geometry[x.tobytes()]
         coefficients = self._support_coefficients.copy()
-        indices = self.contact_geometry[x.tobytes()][2]
+        indices = entry[2]
+        local_points = entry[3] if len(entry) > 3 else None
         derivatives = self.required_force_derivatives(x, xd, xdd)
         gradient = [weights @ derivative for derivative in derivatives]
         if not len(indices) or not np.any(coefficients):
@@ -427,7 +487,7 @@ class RobotDynamics:
         joint_weights = np.empty(self.model.nv)
         joint_weights[order] = weights
         external = pin.StdVec_Force([pin.Force.Zero() for _ in range(self.model.njoints)])
-        normals = self.contact_geometry[x.tobytes()][1]
+        normals = entry[1]
         # The contact wrench depends on six joint-pose coordinates, regardless
         # of the number of robot joints. In the joint's local frame a fixed
         # material contact point and fixed world normal give an exact analytic
@@ -440,18 +500,26 @@ class RobotDynamics:
             joint = geometry.parentJoint
             joint_pose = self.data.oMi[joint].copy()
             jac = pin.getJointJacobian(self.model, self.data, joint, pin.LOCAL).copy()
-            geometry_pose = joint_pose * geometry.placement
-            result = self.coal.DistanceResult()
-            self.coal.distance(geometry.geometry,
-                               self.coal.Transform3s(geometry_pose.rotation, geometry_pose.translation),
-                               self.terrain, self.coal.Transform3s(), self.distance_request, result)
-            normal = -np.asarray(result.normal)
-            # A body wholly inside a watertight mesh has the opposite
-            # signed-distance normal to the unsigned nearest-surface query.
-            if normal @ normals[contact] < 0:
-                normal = -normal
+            if local_points is not None:
+                # The scheduled contact is a material point carried by the
+                # link; its world position and moment arm follow the current
+                # pose even when the surface gap changes.
+                normal = normals[contact]
+                point = joint_pose.rotation @ local_points[contact] + joint_pose.translation
+            else:
+                geometry_pose = joint_pose * geometry.placement
+                result = self.coal.DistanceResult()
+                self.coal.distance(geometry.geometry,
+                                   self.coal.Transform3s(geometry_pose.rotation, geometry_pose.translation),
+                                   self.terrain, self.coal.Transform3s(), self.distance_request, result)
+                normal = -np.asarray(result.normal)
+                # A body wholly inside a watertight mesh has the opposite
+                # signed-distance normal to the unsigned nearest-surface query.
+                if normal @ normals[contact] < 0:
+                    normal = -normal
+                point = result.getNearestPoint1()
             force = friction_rays(normal, self.support.friction) @ active_coefficients
-            offset = result.getNearestPoint1() - joint_pose.translation
+            offset = point - joint_pose.translation
             rotation = joint_pose.rotation
             force_local = rotation.T @ force
             offset_local = rotation.T @ offset
@@ -462,14 +530,22 @@ class RobotDynamics:
             # rotate with the local frame.
             derivative = np.zeros((6, 6))
             derivative[:3, 3:] = skew(force_local)
-            derivative[3:, 3:] = skew(cross(offset_local, force_local))
+            if local_points is not None:
+                # A scheduled contact is a material point, so its local offset
+                # stays constant while the world point rotates with the link.
+                derivative[3:, 3:] = (np.outer(force_local, offset_local)
+                                      - (offset_local @ force_local) * np.eye(3))
+            else:
+                # A live nearest point remains on the fixed terrain instead.
+                derivative[3:, 3:] = skew(cross(offset_local, force_local))
             gradient[0] -= (jac @ joint_weights) @ derivative @ jac @ transform
         raw_dq = pin.computeRNEADerivatives(self.model, self.data, q, v, a)[0].copy()
         supported_dq = pin.computeRNEADerivatives(self.model, self.data, q, v, a, external)[0]
         gradient[0] += joint_weights @ (supported_dq-raw_dq) @ transform
         return gradient
 
-    def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False, exact=False):
+    def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False, exact=False,
+                   schedule=None):
         from support import cross
         q = self.configuration(x)
         self.pin.updateGeometryPlacements(self.model, self.data, self.geometry, self.geometry_data, q)
@@ -522,22 +598,47 @@ class RobotDynamics:
         distances *= signs
         if self.support is not None:
             mappings, contact_normals = [], []
-            active = np.flatnonzero(distances <= CONTACT_MARGIN)
-            if len(active):
+            if schedule is None:
+                active = np.flatnonzero(distances <= CONTACT_MARGIN)
+                if len(active):
+                    self.pin.computeJointJacobians(self.model, self.data, q)
+                    order = np.r_[np.arange(6), self.v_indices]
+                    for index in active:
+                        geometry = self.geometry.geometryObjects[int(index)]
+                        joint = geometry.parentJoint
+                        jac = self.pin.getJointJacobian(self.model, self.data, joint, self.pin.LOCAL_WORLD_ALIGNED)
+                        offset = nearest_points[index] - self.data.oMi[joint].translation
+                        point_jac = jac[:3] + np.cross(jac[3:].T, offset).T
+                        normal = signs[index] * normals[index]
+                        if not np.isfinite(normal).all() or np.linalg.norm(normal) < 1e-8:
+                            raise TrajectoryOptimizeError(f'Cannot determine contact normal for {geometry.name}.')
+                        mappings.append(point_jac.T[order])
+                        contact_normals.append(normal)
+                entry = mappings, contact_normals, active.copy()
+            else:
+                # A fixed schedule supplies the support model even when the
+                # current link is a few centimetres above the terrain. The
+                # mapping still uses the current pose, and zero force remains
+                # possible, so lift-off does not need contact removal.
                 self.pin.computeJointJacobians(self.model, self.data, q)
                 order = np.r_[np.arange(6), self.v_indices]
-                for index in active:
+                active = np.empty(len(schedule), dtype=int)
+                local_points = []
+                for contact, (index, local_point, normal) in enumerate(schedule):
                     geometry = self.geometry.geometryObjects[int(index)]
-                    joint = geometry.parentJoint
-                    jac = self.pin.getJointJacobian(self.model, self.data, joint, self.pin.LOCAL_WORLD_ALIGNED)
-                    offset = nearest_points[index] - self.data.oMi[joint].translation
+                    joint_pose = self.data.oMi[geometry.parentJoint]
+                    jac = self.pin.getJointJacobian(self.model, self.data, geometry.parentJoint,
+                                                    self.pin.LOCAL_WORLD_ALIGNED)
+                    point = joint_pose.rotation @ local_point + joint_pose.translation
+                    offset = point - joint_pose.translation
                     point_jac = jac[:3] + np.cross(jac[3:].T, offset).T
-                    normal = signs[index] * normals[index]
-                    if not np.isfinite(normal).all() or np.linalg.norm(normal) < 1e-8:
-                        raise TrajectoryOptimizeError(f'Cannot determine contact normal for {geometry.name}.')
                     mappings.append(point_jac.T[order])
-                    contact_normals.append(normal)
-            self.contact_geometry[x.tobytes()] = mappings, contact_normals, active.copy()
+                    contact_normals.append(np.asarray(normal))
+                    active[contact] = int(index)
+                    local_points.append(np.asarray(local_point))
+                entry = mappings, contact_normals, active, local_points
+            self.contact_geometry[x.tobytes()] = entry
+            self._contact_request[x.tobytes()] = self.contact_request(schedule)
         if derivatives:
             return distances, signs[:, None] * np.asarray(gradients)
         if return_normals:
@@ -621,18 +722,22 @@ class CollocationProblem:
             self._collisions.clear()
             if self.robot.support is not None:
                 self.robot.contact_geometry.clear()
+                self.robot._contact_request.clear()
 
-    def collision(self, x, penetration_only=False):
-        key = (x.tobytes(), penetration_only)
+    def collision(self, x, penetration_only=False, schedule=None):
+        key = (x.tobytes(), penetration_only, RobotDynamics.contact_request(schedule))
         if key not in self._collisions:
-            self._collisions[key] = self.robot.clearances(x, derivatives=True,
-                                                          penetration_only=penetration_only)
+            options = dict(derivatives=True, penetration_only=penetration_only)
+            if schedule is not None:
+                options['schedule'] = schedule
+            self._collisions[key] = self.robot.clearances(x, **options)
         return self._collisions[key]
 
-    def margins(self, state, clearance=None):
+    def margins(self, state, clearance=None, schedule=None):
         x, v, _ = state
         robot = self.robot
-        torque = robot.forces(*state)[6:]
+        torque = robot.forces(*state) if schedule is None else robot.forces(*state, schedule=schedule)
+        torque = torque[6:]
         return {
             "position": np.r_[x[6:] - robot.lower, robot.upper - x[6:]],
             "velocity": np.r_[robot.velocity - v[6:], robot.velocity + v[6:]],

@@ -136,11 +136,19 @@ to the edited configuration sequence.
 
 Support/contact forces are enabled. **Terrain friction μ** in the Operations
 panel defaults to **0.7** and accepts any finite nonnegative value. The API field
-is `friction`, also defaulting to `0.7`. No contact labels are required: collision
-geometry within `1e-3` m of the terrain supplies candidate point contacts. Each
-uses a unilateral force and a four-ray pyramid inside the Coulomb friction cone.
-The 1 mm contact-inference margin is separate from the `1e-5` m non-penetration
-acceptance tolerance.
+is `friction`, also defaulting to `0.7`. No contact labels are required. At
+initialization the smoothed, ground-aligned reference seeds a fixed search
+schedule: collision geometry within 5 cm of the terrain with an upward-facing
+normal supplies a contact, and its terrain contact point is stored in the link
+frame. During the solve that scheduled point and support mapping follow the link
+pose, so the support QP keeps the contact available even when the current surface
+gap exceeds 1 mm; its force may still be zero, which represents lift-off. This is
+a search model only. Final validation does not use the schedule: it infers live
+contacts within the `1e-3` m margin and applies the unchanged `1e-5` m
+non-penetration tolerance. Each contact uses a unilateral force and a four-ray
+pyramid inside the Coulomb friction cone. Set
+`TRAJECTORY_OPTIMIZE_CONTACT_SCHEDULE=0` to restore live 1 mm contact inference
+during the search.
 OSQP distributes these forces together with bounded joint torques to explain
 inverse dynamics. The remaining floating-base force must vanish, and joint
 torques must satisfy the available URDF effort limits. Geometry penetration is
@@ -161,7 +169,8 @@ including seated/body support. A cubic spline with knots about 0.3 seconds apart
 fits the vertical base offset, with zero offset at fixed keyframes. Knots lie on
 trajectory nodes and the spline's analytic velocities are added with its positions,
 so Hermite reconstruction preserves the smooth correction. This only initializes
-the search; candidate contacts still require the 1 mm gap at each sample.
+the search. The fixed schedule is inferred from that initial path; accepted
+outputs still require live contacts within 1 mm at validation samples.
 `TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and
 `TRAJECTORY_OPTIMIZE_MAXITER` tune the warm start and inner iterations. Sample evaluation is distributed over forked
 worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain and up to

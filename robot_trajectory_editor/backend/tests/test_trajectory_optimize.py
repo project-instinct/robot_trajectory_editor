@@ -490,17 +490,28 @@ def test_stance_offset_leaves_distant_flight_unsupported(sphere_urdf):
 
 def test_support_envelope_gradient_matches_finite_difference(sphere_urdf):
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
-    state = [np.array([0., 0., .1, .2, -.1, .3]), np.zeros(6), np.array([20., 0., 0., 0., 0., 0.])]
-    residual = robot.forces(*state)
-    gradients = robot.support_penalty_gradient(state, residual)
-    for field in range(3):
-        for axis in range(6):
-            plus, minus = [x.copy() for x in state], [x.copy() for x in state]
-            plus[field][axis] += 1e-5
-            minus[field][axis] -= 1e-5
-            rp, rm = robot.forces(*plus), robot.forces(*minus)
-            actual = (.5*(rp@rp) - .5*(rm@rm))/2e-5
-            assert gradients[field][axis] == pytest.approx(actual, abs=2e-3, rel=2e-3)
+
+    def check(state, schedule=None):
+        options = {} if schedule is None else {'schedule': schedule}
+        residual = robot.forces(*state, **options)
+        assert np.max(np.abs(residual)) > 0
+        gradients = robot.support_penalty_gradient(state, residual, **options)
+        for field in range(3):
+            for axis in range(6):
+                plus, minus = [x.copy() for x in state], [x.copy() for x in state]
+                plus[field][axis] += 1e-5
+                minus[field][axis] -= 1e-5
+                rp, rm = robot.forces(*plus, **options), robot.forces(*minus, **options)
+                actual = (.5*(rp@rp) - .5*(rm@rm))/2e-5
+                assert gradients[field][axis] == pytest.approx(actual, abs=2e-3, rel=2e-3)
+
+    check([np.array([0., 0., .1, .2, -.1, .3]), np.zeros(6), np.array([20., 0., 0., 0., 0., 0.])])
+    # A scheduled contact is a material point carried by the link, so its
+    # envelope derivative differs from the live nearest-point case.
+    x = np.array([0., 0., .12, .2, -.1, .3])
+    schedule = robot.infer_contact_schedule(x)
+    assert len(schedule) == 1
+    check([x, np.zeros(6), np.array([0., 0., 50., 0., 5., 0.])], schedule)
 
 
 def test_support_envelope_gradient_with_saturated_actuator(articulated_urdf):

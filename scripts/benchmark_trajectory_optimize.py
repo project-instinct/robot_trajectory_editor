@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import resource
 import sys
+import traceback
 from time import perf_counter
 
 import numpy as np
@@ -144,13 +145,16 @@ def main():
                             x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)[0]
                         problem.robot.clearances(q)
                         contacts = len(problem.robot.contact_geometry[q.tobytes()][0])
+                        scheduled = (len(objective.schedules[sample])
+                                     if objective.schedules is not None else None)
                         print(json.dumps({'stage': 'global_best', 'elapsed': perf_counter()-started,
                                           'improved': improved, 'score': score,
                                           'residuals': objective.errors,
                                           'worst_dynamics': {'value': float(np.abs(
                                               objective.dynamics_residual[sample, axis])),
                                               'frame': int(frame), 'fraction': float(fraction),
-                                              'axis': int(axis), 'contacts': contacts}}), flush=True)
+                                              'axis': int(axis), 'contacts': contacts,
+                                              'scheduled': scheduled}}), flush=True)
                     return result
 
                 trajectory_optimize_contacts.evaluate_parallel = merged
@@ -164,6 +168,7 @@ def main():
         print(json.dumps({'stage': 'validated', 'seconds': perf_counter()-started,
                           'residuals': result['residuals']}), flush=True)
     except Exception as error:
+        traceback.print_exc()
         print(json.dumps({'stage': 'failed', 'seconds': perf_counter()-started,
                           'error': str(error)}), flush=True)
         raise SystemExit(1)

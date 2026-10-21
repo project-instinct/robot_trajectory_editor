@@ -83,6 +83,9 @@ class ContactObjective:
         self.velocity_reference = np.gradient(problem.reference, problem.dt, axis=0,
                                               edge_order=2 if problem.n > 2 else 1)
         self.errors = {}
+        # Optional per-sample fixed contact schedules inferred once from the
+        # smoothed, aligned reference. None keeps the old 1 mm live inference.
+        self.schedules = None
         self.fractions = (0., *GAUSS_POINTS, 1.)
         self.sample_count = (problem.n - 1) * len(self.fractions)
         # Augmented-Lagrangian multipliers for the six base-force equalities.
@@ -129,11 +132,14 @@ class ContactObjective:
                 self.check_time()
                 state = hermite(x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)
                 q, qd, _ = state
-                clearance, clearance_jac = problem.collision(q, penetration_only=True)
-                torque = robot.forces(*state)
+                sample = frame*len(fractions) + sample_of[fraction]
+                schedule = self.schedules[sample] if self.schedules is not None else None
+                clearance, clearance_jac = problem.collision(q, penetration_only=True, schedule=schedule)
+                torque = (robot.forces(*state) if schedule is None
+                          else robot.forces(*state, schedule=schedule))
                 if not np.isfinite(torque).all():
                     raise TrajectoryOptimizeError('Non-finite dynamics during Trajectory Optimize.')
-                margins = problem.margins(state, clearance)
+                margins = problem.margins(state, clearance, schedule)
                 self.errors['dynamics'] = max(self.errors['dynamics'], float(np.max(np.abs(torque[:6]))))
                 for name, values in margins.items():
                     if np.isnan(values).any() or np.isneginf(values).any():
@@ -158,7 +164,6 @@ class ContactObjective:
                 chart = min(float(margins['orientation'][0]), 0.)
                 loss += self.penalty * chart*chart
                 dq[3:6] -= 2*self.penalty*chart*q[3:6]/(2*np.pi-.01)
-                sample = frame*len(fractions) + sample_of[fraction]
                 base_error = torque[:6]
                 base_normalized = base_error / force_scale
                 multipliers = self.dynamics_multipliers[sample]
@@ -178,7 +183,7 @@ class ContactObjective:
                     effort_alpha = effort_multipliers + self.effort_rho*effort_normalized
                     effort_weight = (-effort_alpha[:joint_count]+effort_alpha[joint_count:]) / force_scale
                     derivatives = robot.support_penalty_gradient(
-                        state, np.r_[base_weight, effort_weight])
+                        state, np.r_[base_weight, effort_weight], schedule=schedule)
                     dq += derivatives[0]
                     dqd += derivatives[1]
                     dqdd += derivatives[2]
@@ -251,9 +256,8 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     objective.evaluate(initial, gradient=False, stop_on_violation=True)
     if objective.feasible():
         return SimpleNamespace(x=initial, nit=0, success=True)
-    _WORKER['objective'] = objective
-    pool = evaluation_pool(workers)
-    chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
+    pool = None
+    chunks = None
 
     def evaluate(variables, gradient=True):
         if pool is None:
@@ -281,6 +285,27 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     v[:, 2] += offset_velocity
     v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
     variables = problem.pack(x, v)
+    # Infer the fixed search schedule from the smoothed, aligned reference
+    # once, at exactly the collocation fractions the objective samples. This
+    # is a search model only: final validation still requires live 1 mm
+    # contact inference, non-penetration, and the usual effort/dynamics bounds.
+    if os.environ.get('TRAJECTORY_OPTIMIZE_CONTACT_SCHEDULE', '1') != '0':
+        problem.robot.contact_geometry.clear()
+        problem.robot._contact_request.clear()
+        problem.robot._force_cache = None
+        problem._collisions.clear()
+        schedules = []
+        for frame in range(problem.n - 1):
+            for fraction in objective.fractions:
+                objective.check_time()
+                state = hermite(x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)
+                schedules.append(problem.robot.infer_contact_schedule(state[0]))
+        objective.schedules = schedules
+    # Fork only after the schedule exists: workers inherit the objective, and
+    # mutating it in the parent afterwards would not reach them.
+    _WORKER['objective'] = objective
+    pool = evaluation_pool(workers)
+    chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
     scale = np.r_[np.ones(problem.position_size), np.full(problem.n*problem.d, 1/problem.dt)]
     iterations = 0
     best = None
@@ -332,6 +357,10 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             if found is not None:
                 if pool is not None:
                     pool.terminate()
+                problem.robot.contact_geometry.clear()
+                problem.robot._contact_request.clear()
+                problem.robot._force_cache = None
+                problem._collisions.clear()
                 return SimpleNamespace(x=found, nit=iterations, success=True)
             residual = objective.dynamics_residual / force_scale
             effort_residual = objective.effort_residual / force_scale
@@ -353,6 +382,10 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             if found is not None:
                 if pool is not None:
                     pool.terminate()
+                problem.robot.contact_geometry.clear()
+                problem.robot._contact_request.clear()
+                problem.robot._force_cache = None
+                problem._collisions.clear()
                 return SimpleNamespace(x=found, nit=iterations, success=True)
     if pool is not None:
         pool.terminate()
