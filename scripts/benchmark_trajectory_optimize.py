@@ -118,21 +118,21 @@ def main():
             trajectory_optimize_contacts.ContactObjective.evaluate = evaluated
             if args.global_worst:
                 original_parallel = trajectory_optimize_contacts.evaluate_parallel
-                best_score = float('inf')
-                best_dynamics = float('inf')
+                best_score = {'scheduled': float('inf'), 'live': float('inf')}
+                best_dynamics = {'scheduled': float('inf'), 'live': float('inf')}
 
-                def merged(objective, pool, chunks, variables, gradient=True):
-                    nonlocal best_score, best_dynamics
-                    result = original_parallel(objective, pool, chunks, variables, gradient)
+                def merged(objective, pool, chunks, variables, gradient=True, live=False):
+                    mode = 'live' if live else 'scheduled'
+                    result = original_parallel(objective, pool, chunks, variables, gradient, live)
                     score = max(objective.errors[name] / problem.robot.tolerances[name]
                                 for name in objective.errors)
                     dynamics = objective.errors['dynamics']
                     improved = []
-                    if score < best_score:
-                        best_score = score
+                    if score < best_score[mode]:
+                        best_score[mode] = score
                         improved.append('score')
-                    if dynamics < best_dynamics:
-                        best_dynamics = dynamics
+                    if dynamics < best_dynamics[mode]:
+                        best_dynamics[mode] = dynamics
                         improved.append('dynamics')
                     if improved:
                         sample, axis = np.unravel_index(
@@ -146,9 +146,9 @@ def main():
                         problem.robot.clearances(q)
                         contacts = len(problem.robot.contact_geometry[q.tobytes()][0])
                         scheduled = (len(objective.schedules[sample])
-                                     if objective.schedules is not None else None)
+                                     if not live and objective.schedules is not None else None)
                         print(json.dumps({'stage': 'global_best', 'elapsed': perf_counter()-started,
-                                          'improved': improved, 'score': score,
+                                          'mode': mode, 'improved': improved, 'score': score,
                                           'residuals': objective.errors,
                                           'worst_dynamics': {'value': float(np.abs(
                                               objective.dynamics_residual[sample, axis])),

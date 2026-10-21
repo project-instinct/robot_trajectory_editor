@@ -22,14 +22,21 @@ class _Feasible(Exception):
         self.variables = variables
 
 
+class _Deadline(Exception):
+    pass
+
+
 def _worker_evaluate(args):
     (intervals, variables, gradient, penalty, dynamics_rho, effort_rho, deadline,
-     dynamics_multipliers, effort_multipliers) = args
+     dynamics_multipliers, effort_multipliers, live) = args
     objective = _WORKER['objective']
     objective.penalty, objective.deadline = penalty, deadline
     objective.dynamics_rho, objective.effort_rho = dynamics_rho, effort_rho
     objective.dynamics_multipliers = dynamics_multipliers
     objective.effort_multipliers = effort_multipliers
+    # Search uses the fixed schedule; restoration can switch these workers to
+    # the live 1 mm inference that the final validator applies.
+    objective.schedules = None if live else _WORKER.get('schedules', objective.schedules)
     objective.dynamics_residual = np.zeros_like(objective.dynamics_residual)
     objective.effort_residual = np.zeros_like(objective.effort_residual)
     value, derivatives = objective.evaluate(variables, gradient=gradient, intervals=intervals)
@@ -47,11 +54,11 @@ def evaluation_pool(workers):
         return None
 
 
-def evaluate_parallel(objective, pool, chunks, variables, gradient=True):
+def evaluate_parallel(objective, pool, chunks, variables, gradient=True, live=False):
     results = pool.map(_worker_evaluate,
                        [(chunk, variables, gradient, objective.penalty, objective.dynamics_rho,
                          objective.effort_rho, objective.deadline,
-                         objective.dynamics_multipliers, objective.effort_multipliers)
+                         objective.dynamics_multipliers, objective.effort_multipliers, live)
                         for chunk in chunks])
     value = sum(result[0] for result in results)
     derivatives = sum(result[1] for result in results) if gradient else None
@@ -244,6 +251,73 @@ def stance_offset(problem, positions, check_time):
     return basis @ coefficients, spline(times, nu=1) @ coefficients
 
 
+def _spline_correction(problem, targets, seconds=.3):
+    """Fit a smooth, nonnegative base correction to per-node lift targets.
+
+    The correction is a C2 cubic B-spline with knots on trajectory nodes, so
+    adding its analytic velocities keeps Hermite reconstruction free of the
+    framewise acceleration spikes a direct position shift would inject.
+    """
+    from scipy.interpolate import BSpline
+    from scipy.linalg import null_space
+    from scipy.optimize import lsq_linear
+    times = np.arange(problem.n) * problem.dt
+    degree = min(3, problem.n-1)
+    stride = max(degree, round(seconds / problem.dt))
+    knots = np.r_[np.repeat(times[0], degree+1), times[stride:-1:stride],
+                  np.repeat(times[-1], degree+1)]
+    spline = BSpline(knots, np.eye(len(knots)-degree-1), degree)
+    basis = spline(times)
+    fixed = np.setdiff1d(np.arange(problem.n), problem.free)
+    if len(fixed):
+        # Zero correction at fixed poses without multiplying by a frame mask
+        # that would break the spline's continuity.
+        free_basis = null_space(basis[fixed])
+        coefficients = free_basis @ np.linalg.lstsq(basis @ free_basis, targets, rcond=None)[0]
+    else:
+        # A nonnegative B-spline basis keeps the whole correction nonnegative,
+        # so lifting penetrating samples cannot push another phase underground.
+        coefficients = lsq_linear(basis, targets, bounds=(0., np.inf), tol=1e-10).x
+    return basis @ coefficients, spline(times, nu=1) @ coefficients
+
+
+def penetration_lift(problem, x, v, check_time, target=.5*CONTACT_MARGIN):
+    """Vertical base offset needed to clear the terrain at dense samples."""
+    lift = np.zeros(problem.n)
+    for frame in range(problem.n-1):
+        check_time()
+        for fraction in np.linspace(0., 1., 5):
+            state = hermite(x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)
+            distances, normals = problem.robot.clearances(state[0], return_normals=True)
+            needed = 0.
+            for distance, normal in zip(distances, normals):
+                if normal[2] > .2:
+                    needed = max(needed, (target-distance)/normal[2])
+            if needed > 0.:
+                lift[frame] = max(lift[frame], needed)
+                lift[frame+1] = max(lift[frame+1], needed)
+    return lift
+
+
+def repair_penetration(problem, variables, deadline):
+    """Project a candidate out of the terrain with a low-frequency base lift."""
+    x, v = problem.unpack(variables)
+
+    def check_time():
+        if perf_counter() >= deadline:
+            raise _Deadline
+
+    for _ in range(3):
+        lift = penetration_lift(problem, x, v, check_time)
+        if not np.any(lift > 0.):
+            break
+        offset, offset_velocity = _spline_correction(problem, lift)
+        x[problem.free, 2] += offset[problem.free]
+        v[:, 2] += offset_velocity
+        variables = problem.pack(x, v)
+    return variables
+
+
 def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     objective = ContactObjective(problem, deadline)
     solver = solver or os.environ.get('TRAJECTORY_OPTIMIZE_SOLVER', 'penalty')
@@ -259,10 +333,17 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     pool = None
     chunks = None
 
-    def evaluate(variables, gradient=True):
+    def evaluate(variables, gradient=True, live=False):
         if pool is None:
-            return objective.evaluate(variables, gradient=gradient)
-        return evaluate_parallel(objective, pool, chunks, variables, gradient)
+            if not live:
+                return objective.evaluate(variables, gradient=gradient)
+            schedules = objective.schedules
+            objective.schedules = None
+            try:
+                return objective.evaluate(variables, gradient=gradient)
+            finally:
+                objective.schedules = schedules
+        return evaluate_parallel(objective, pool, chunks, variables, gradient, live)
     x, v = problem.unpack(initial)
     # Joint limits apply to the nodal variables, which are independent of the
     # reference positions. Project the initial guess so the search does not
@@ -304,6 +385,7 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     # Fork only after the schedule exists: workers inherit the objective, and
     # mutating it in the parent afterwards would not reach them.
     _WORKER['objective'] = objective
+    _WORKER['schedules'] = objective.schedules
     pool = evaluation_pool(workers)
     chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
     scale = np.r_[np.ones(problem.position_size), np.full(problem.n*problem.d, 1/problem.dt)]
@@ -348,47 +430,100 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             return variables
         return None
 
-    if solver == 'augmented':
-        rho, previous = 1e3, np.inf
-        for _ in range(int(os.environ.get('TRAJECTORY_OPTIMIZE_OUTERS', 8))):
-            objective.dynamics_rho = objective.effort_rho = rho
-            objective.penalty = rho / 2
-            found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 10)))
-            if found is not None:
-                if pool is not None:
-                    pool.terminate()
-                problem.robot.contact_geometry.clear()
-                problem.robot._contact_request.clear()
-                problem.robot._force_cache = None
-                problem._collisions.clear()
-                return SimpleNamespace(x=found, nit=iterations, success=True)
-            residual = objective.dynamics_residual / force_scale
-            effort_residual = objective.effort_residual / force_scale
-            objective.dynamics_multipliers += rho * residual
-            objective.effort_multipliers = np.maximum(
-                0., objective.effort_multipliers + rho * effort_residual)
-            worst = max(float(np.max(np.abs(residual), initial=0)),
-                        float(np.max(np.abs(effort_residual), initial=0)))
-            if worst > .5 * previous:
-                rho = min(rho * 10, 1e7)
-            previous = worst
-    else:
-        objective.dynamics_multipliers[:] = 0.
-        objective.effort_multipliers[:] = 0.
-        for penalty in (1e3, 1e5, 1e7):
-            objective.dynamics_rho = objective.effort_rho = 2 * penalty
-            objective.penalty = penalty
-            found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 40)))
-            if found is not None:
-                if pool is not None:
-                    pool.terminate()
-                problem.robot.contact_geometry.clear()
-                problem.robot._contact_request.clear()
-                problem.robot._force_cache = None
-                problem._collisions.clear()
-                return SimpleNamespace(x=found, nit=iterations, success=True)
+    def finish(variables):
+        if pool is not None:
+            pool.terminate()
+        problem.robot.contact_geometry.clear()
+        problem.robot._contact_request.clear()
+        problem.robot._force_cache = None
+        problem._collisions.clear()
+        return SimpleNamespace(x=variables, nit=iterations, success=True)
+
+    # Leave room for the restoration and the independent final validation.
+    # A timeout during the search is a normal stopping condition now; the
+    # remembered candidate is still repaired below.
+    remaining = deadline - perf_counter()
+    reserve = float(os.environ.get('TRAJECTORY_OPTIMIZE_RESTORE_RESERVE', 0) or 0.)
+    if reserve <= 0.:
+        reserve = min(20., max(8., .5 * remaining))
+    objective.deadline = deadline - reserve
+    try:
+        if solver == 'augmented':
+            rho, previous = 1e3, np.inf
+            for _ in range(int(os.environ.get('TRAJECTORY_OPTIMIZE_OUTERS', 8))):
+                objective.dynamics_rho = objective.effort_rho = rho
+                objective.penalty = rho / 2
+                found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 10)))
+                if found is not None:
+                    return finish(found)
+                residual = objective.dynamics_residual / force_scale
+                effort_residual = objective.effort_residual / force_scale
+                objective.dynamics_multipliers += rho * residual
+                objective.effort_multipliers = np.maximum(
+                    0., objective.effort_multipliers + rho * effort_residual)
+                worst = max(float(np.max(np.abs(residual), initial=0)),
+                            float(np.max(np.abs(effort_residual), initial=0)))
+                if worst > .5 * previous:
+                    rho = min(rho * 10, 1e7)
+                previous = worst
+        else:
+            objective.dynamics_multipliers[:] = 0.
+            objective.effort_multipliers[:] = 0.
+            for penalty in (1e3, 1e5, 1e7):
+                objective.dynamics_rho = objective.effort_rho = 2 * penalty
+                objective.penalty = penalty
+                found = run_stage(int(os.environ.get('TRAJECTORY_OPTIMIZE_MAXITER', 40)))
+                if found is not None:
+                    return finish(found)
+    except TrajectoryOptimizeError as error:
+        if 'time budget exhausted' not in str(error):
+            raise
+
+    # Feasibility restoration. The search minimizes a sum of penalties against
+    # a fixed schedule and can stop on its budget with a candidate that still
+    # penetrates or saturates an actuator. Score restoration candidates with
+    # the same live 1 mm contact inference as the final validator, then apply
+    # only time-continuous corrections: a smooth base lift fitted to the
+    # measured penetration depth and whole-trajectory low-pass projections.
+    search = best[1].copy()
+    remaining = deadline - perf_counter()
+    validation_reserve = min(8., max(3., .2 * remaining))
+    restore_deadline = deadline - validation_reserve
+    objective.deadline = restore_deadline
+    live_search_score = best[0]
+    try:
+        evaluate(search, gradient=False, live=True)
+        live_search_score = score(objective.errors)
+        best = live_search_score, search, dict(objective.errors)
+        for window in (None, 31, 61, 91):
+            if perf_counter() >= restore_deadline:
+                break
+            if window is None:
+                candidate = repair_penetration(problem, best[1], restore_deadline)
+            else:
+                window = min(window, problem.n if problem.n % 2 else problem.n - 1)
+                if window < 5:
+                    continue
+                x, v = problem.unpack(best[1])
+                smoothed = savgol_filter(x, window, 2, axis=0)
+                x[problem.free] = smoothed[problem.free]
+                x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower,
+                                             problem.robot.upper)
+                v = np.gradient(x, problem.dt, axis=0, edge_order=2 if problem.n > 2 else 1)
+                candidate = repair_penetration(problem, problem.pack(x, v), restore_deadline)
+            evaluate(candidate, gradient=False, live=True)
+            remember(candidate)
+    except _Deadline:
+        pass
+    except TrajectoryOptimizeError as error:
+        if 'time budget exhausted' not in str(error):
+            raise
+    if best[0] < live_search_score or best[0] <= 1.:
+        return finish(best[1])
     if pool is not None:
         pool.terminate()
     worst = max(best[2], key=lambda name: best[2][name]/problem.robot.tolerances[name])
+    summary = ', '.join(f'{name} {best[2][name]:.6g}' for name in problem.robot.tolerances)
     raise TrajectoryOptimizeError(f'Contact optimization failed: {worst} residual {best[2][worst]:.6g} '
-                          f'(tolerance {problem.robot.tolerances[worst]:g}). Fixed keyframes were not relaxed.')
+                          f'(tolerance {problem.robot.tolerances[worst]:g}). Best residuals: {summary}. '
+                          f'Fixed keyframes were not relaxed.')

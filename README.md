@@ -177,6 +177,13 @@ worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain
 16 on flat ground) because independent interval blocks dominate the runtime.
 The solver and penalties guide the search; they do not relax the acceptance
 tolerances.
+The search reserves part of the budget for feasibility restoration. Restoration
+scores candidates with the live 1 mm contact model used by validation, fits a
+C2 B-spline base lift to the measured penetration depth, and tries
+whole-trajectory low-pass projections that reduce the joint accelerations
+saturating the actuator bounds. These corrections stay time-continuous (no
+per-frame shifts). `TRAJECTORY_OPTIMIZE_RESTORE_RESERVE` overrides the reserved
+seconds.
 The pool uses `fork` so workers inherit the loaded model and terrain; set
 `TRAJECTORY_OPTIMIZE_WORKERS=1` to force serial evaluation. Trajectory Optimize has a 45-second
 computation budget, checked between samples. A check

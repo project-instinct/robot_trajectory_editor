@@ -836,7 +836,9 @@ class CollocationProblem:
                     largest_ratio = ratio
                     worst = f"{name} residual {error:.6g} near frame {frame:.4f} (tolerance {tolerances[name]:g})"
         if largest_ratio > 1:
-            raise TrajectoryOptimizeError(f"Validation failed: {worst}.")
+            summary = ', '.join(f'{name} {residuals[name]:.6g}' for name in tolerances
+                                if residuals[name] > 0.)
+            raise TrajectoryOptimizeError(f"Validation failed: {worst}. Residuals: {summary}.")
         return residuals
 
 
