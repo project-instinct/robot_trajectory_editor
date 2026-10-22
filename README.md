@@ -118,9 +118,7 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 
 **Trajectory Optimize** optimizes the entire edited motion, regardless of the timeline
 selection. Every keyframe anchor fixes all joints and the full base pose exactly.
-Without anchors, the start and end frames are fixed boundary conditions and only the interior frames are eligible. Successful results update the editor as
-one undo step. Solver/model/validation failures preserve the original data;
-results are also discarded if the trajectory or scene changes during the request.
+Without anchors, the start and end frames are fixed boundary conditions and only the interior frames are eligible. Clicking the button opens the parameter dialog (`max_effort_scale`, terrain friction). A successful result updates the editor as one undo step. A solver/validation failure returns the best candidate as a preview: **Keep** applies it as one undo step, **Dump** restores the original. Results are discarded if the trajectory or scene changes during the request.
 
 Install the optional dynamics dependencies in the backend environment:
 
@@ -134,8 +132,12 @@ all internal node velocities participate in the optimization; fixed keyframe
 configurations are omitted from the decision vector. The objective stays close
 to the edited configuration sequence.
 
-Support/contact forces are enabled. **Terrain friction μ** in the Operations
-panel defaults to **0.7** and accepts any finite nonnegative value. The API field
+**`max_effort_scale`** in the parameter dialog (API field `max_effort_scale`,
+default `1.0`) multiplies the URDF actuator effort limits for that optimization
+only. Values below `1` are rejected. The applied scale is returned in the result.
+
+Support/contact forces are enabled. **Terrain friction μ** in the parameter
+dialog defaults to **0.7** and accepts any finite nonnegative value. The API field
 is `friction`, also defaulting to `0.7`. No contact labels are required. At
 initialization the smoothed, ground-aligned reference seeds a fixed search
 schedule: collision geometry within 5 cm of the terrain with an upward-facing

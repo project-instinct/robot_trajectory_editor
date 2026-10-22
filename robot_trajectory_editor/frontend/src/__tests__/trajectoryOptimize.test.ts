@@ -37,15 +37,16 @@ beforeEach(() => {
 describe('Trajectory Optimize', () => {
   it('submits the configured terrain friction', async () => {
     api.mockResolvedValue(response())
-    await runTrajectoryOptimize('robot.urdf', () => true, 0.5)
+    await runTrajectoryOptimize('robot.urdf', () => true, 0.5, 1.25)
     expect(api.mock.calls[0][4]).toBe(0.5)
+    expect(api.mock.calls[0][5]).toBe(1.25)
   })
 
   it('submits all frames and anchors, applies once, preserves cursor and supports undo', async () => {
     const before = useStore.getState().trajectory.clone()
     api.mockResolvedValue(response())
     await runTrajectoryOptimize('robot.urdf')
-    expect(api).toHaveBeenCalledWith(before.toJSON(), [1], null, 'robot.urdf', 0.7)
+    expect(api).toHaveBeenCalledWith(before.toJSON(), [1], null, 'robot.urdf', 0.7, 1)
     const after = useStore.getState()
     expect(after.trajectory.basePoseW[2]).toBe(3)
     expect(after.trajectory.basePoseW[8]).toBe(4)
@@ -55,6 +56,18 @@ describe('Trajectory Optimize', () => {
     expect(after.trajectoryVersion).toBe(1)
     after.undo()
     expect(useStore.getState().trajectory.toJSON()).toEqual(before.toJSON())
+  })
+
+  it('previews a failed candidate and restores it on dump', async () => {
+    const before = useStore.getState().trajectory.toJSON()
+    const result = { ...response(), success: false, error: 'Validation failed: dynamics residual 1' }
+    api.mockResolvedValue(result)
+    const outcome = await runTrajectoryOptimize()
+    expect(outcome.preview).toBe(true)
+    expect(useStore.getState().trajectory.basePoseW[2]).toBe(3)
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    useStore.getState().undo()
+    expect(useStore.getState().trajectory.toJSON()).toEqual(before)
   })
 
   it('leaves data and undo history unchanged on solver failure', async () => {

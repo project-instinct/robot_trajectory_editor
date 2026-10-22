@@ -67,8 +67,9 @@ def test_trajectory_optimize_uses_requested_model_and_propagates_failure(tmp_pat
     first.write_text('first')
     selected.write_text('selected')
     monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', str(first))
-    def fail(trajectory, keyframes, path, terrain, resolver, friction):
+    def fail(trajectory, keyframes, path, terrain, resolver, friction, max_effort_scale=1.0):
         assert friction == .7
+        assert max_effort_scale == 1.0
         assert path == str(selected)
         assert keyframes == [0, 2]
         assert terrain == 'edited mesh'

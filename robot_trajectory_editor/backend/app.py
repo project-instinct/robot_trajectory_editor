@@ -264,9 +264,13 @@ def optimize_trajectory_endpoint():
         friction = payload.get("friction", 0.7)
         if type(friction) not in (int, float) or not math.isfinite(friction) or friction < 0:
             raise TrajectoryOptimizeError("Terrain friction must be a finite nonnegative number.")
+        max_effort_scale = payload.get("max_effort_scale", 1.0)
+        if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
+            raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
         result = optimize_trajectory(payload["trajectory"], payload.get("keyframes", []),
-                                    path, terrain, resolve_mesh_path, friction=friction)
-        return jsonify(result)
+                                    path, terrain, resolve_mesh_path, friction=friction,
+                                    max_effort_scale=max_effort_scale)
+        return jsonify(result), (200 if result.get("success", True) else 422)
     except (TrajectoryOptimizeError, KeyError, TypeError, ValueError, OSError) as error:
         return jsonify({"error": str(error)}), 422
     except Exception as error:

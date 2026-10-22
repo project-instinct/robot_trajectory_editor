@@ -7,6 +7,7 @@ never enter the decision vector.
 """
 import copy
 import io
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def rotation_kinematics(r, rd, rdd):
 
 
 class RobotDynamics:
-    def __init__(self, urdf_path, names, terrain_obj, resolve_mesh, friction=None):
+    def __init__(self, urdf_path, names, terrain_obj, resolve_mesh, friction=None, effort_scale=1.0):
         try:
             import pinocchio as pin
             import coal
@@ -139,6 +140,9 @@ class RobotDynamics:
                 np.isnan(self.velocity).any() or np.isnan(self.effort).any() or
                 np.any(self.lower > self.upper) or np.any(self.velocity < 0) or np.any(self.effort < 0)):
             raise TrajectoryOptimizeError("URDF has invalid joint limits.")
+        if type(effort_scale) not in (int, float) or not math.isfinite(effort_scale) or effort_scale < 1.0:
+            raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
+        self.effort = self.effort * effort_scale
         fixed_links = {joint.find("child").attrib["link"] for joint in by_name.values()
                        if joint.attrib["type"] == "fixed"}
         for link in root.findall("link"):
@@ -805,7 +809,7 @@ class CollocationProblem:
         return coo_matrix((np.concatenate(values), (np.concatenate(rows), np.concatenate(columns))),
                           shape=(row_offset, len(variables))).tocsr()
 
-    def validate(self, variables, deadline=None):
+    def validation_residuals(self, variables, deadline=None):
         tolerances = self.robot.tolerances
         residuals = dict.fromkeys(tolerances, 0.)
         worst = ""
@@ -835,23 +839,52 @@ class CollocationProblem:
                 if ratio > largest_ratio:
                     largest_ratio = ratio
                     worst = f"{name} residual {error:.6g} near frame {frame:.4f} (tolerance {tolerances[name]:g})"
+        return residuals, worst, largest_ratio
+
+    def validate(self, variables, deadline=None):
+        residuals, worst, largest_ratio = self.validation_residuals(variables, deadline)
         if largest_ratio > 1:
-            summary = ', '.join(f'{name} {residuals[name]:.6g}' for name in tolerances
+            summary = ', '.join(f'{name} {residuals[name]:.6g}' for name in self.robot.tolerances
                                 if residuals[name] > 0.)
             raise TrajectoryOptimizeError(f"Validation failed: {worst}. Residuals: {summary}.")
         return residuals
 
 
+def _build_trajectory_output(payload, problem, robot, variables, fixed):
+    x, velocity = problem.unpack(variables)
+    output = copy.deepcopy(payload)
+    output["base_pos_w"] = x[:, :3].astype(np.float32).tolist()
+    output["joint_pos"] = x[:, 6:].astype(np.float32).tolist()
+    output["base_quat_w"] = robot.Rotation.from_rotvec(x[:, 3:6]).as_quat()[:, [3, 0, 1, 2]].astype(np.float32).tolist()
+    for frame in fixed:
+        for field in ("joint_pos", "base_pos_w", "base_quat_w"):
+            output[field][frame] = copy.deepcopy(payload[field][frame])
+    # Validate the actual float32 configuration that the editor/NPZ will keep,
+    # rather than only the solver doubles.
+    rounded = x.copy()
+    rounded[:, :3] = output["base_pos_w"]
+    rounded[:, 6:] = output["joint_pos"]
+    for i, quat in enumerate(output["base_quat_w"]):
+        r = robot.Rotation.from_quat(np.asarray(quat)[[1, 2, 3, 0]]).as_rotvec()
+        angle = np.linalg.norm(r)
+        if angle > 1e-9:
+            r = min([r + k*2*np.pi*r/angle for k in (-1, 0, 1)], key=lambda v: np.linalg.norm(v-x[i, 3:6]))
+        rounded[i, 3:6] = r
+    return output, problem.pack(rounded, velocity)
+
+
 def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve_mesh=lambda _: None,
-                       friction=None, time_budget=45.):
+                       friction=None, time_budget=45., max_effort_scale=1.0):
     from time import perf_counter
     started = perf_counter()
+    if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
+        raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
     names, rate, positions, joints, quats, fixed = read_trajectory(payload, keyframes)
     # With no tagged keyframes the trajectory endpoints are the boundary
     # conditions; only the interior frames are optimized.
     if not fixed:
         fixed = [0, len(positions) - 1]
-    robot = RobotDynamics(urdf_path, names, terrain_obj, resolve_mesh, friction)
+    robot = RobotDynamics(urdf_path, names, terrain_obj, resolve_mesh, friction, effort_scale=max_effort_scale)
     deadline = started + time_budget if friction is not None else None
     from scipy.optimize import minimize, NonlinearConstraint
     # Use one rotation chart, unwrapping the quaternion representation before
@@ -918,36 +951,19 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
                                        {"type": "ineq", "fun": problem.inequalities,
                                         "jac": lambda x: problem.constraint_jacobian(x, False).toarray()}],
                           options={"maxiter": 300, "ftol": 1e-9})
-    if not result.success:
-        residual = float(np.max(np.abs(problem.equalities(result.x))))
-        violation = max(0., -float(np.min(problem.inequalities(result.x))))
-        # Iteration limits can stop a solver at an already feasible point.
-        # The independent validation below is the acceptance decision.
-        if residual > robot.tolerances['dynamics'] or violation > max(
-                robot.tolerances['position'], robot.tolerances['velocity'],
-                robot.tolerances['effort'], robot.tolerances['clearance']):
-            raise TrajectoryOptimizeError(f"Solver failed: {result.message}. Base dynamics residual {residual:.6g}; "
-                                  f"constraint violation {violation:.6g}. Fixed keyframes were not relaxed.")
-    x, velocity = problem.unpack(result.x)
-    output = copy.deepcopy(payload)
-    output["base_pos_w"] = x[:, :3].astype(np.float32).tolist()
-    output["joint_pos"] = x[:, 6:].astype(np.float32).tolist()
-    output["base_quat_w"] = robot.Rotation.from_rotvec(x[:, 3:6]).as_quat()[:, [3, 0, 1, 2]].astype(np.float32).tolist()
-    for frame in fixed:
-        for field in ("joint_pos", "base_pos_w", "base_quat_w"):
-            output[field][frame] = copy.deepcopy(payload[field][frame])
-    # Validate the actual float32 configuration that the editor/NPZ will keep,
-    # rather than only the solver doubles.
-    rounded = x.copy()
-    rounded[:, :3] = output["base_pos_w"]
-    rounded[:, 6:] = output["joint_pos"]
-    for i, quat in enumerate(output["base_quat_w"]):
-        r = robot.Rotation.from_quat(np.asarray(quat)[[1, 2, 3, 0]]).as_rotvec()
-        angle = np.linalg.norm(r)
-        if angle > 1e-9:
-            r = min([r + k*2*np.pi*r/angle for k in (-1, 0, 1)], key=lambda v: np.linalg.norm(v-x[i, 3:6]))
-        rounded[i, 3:6] = r
-    residuals = problem.validate(problem.pack(rounded, velocity), deadline)
-    return {"trajectory": output, "residuals": residuals, "tolerances": robot.tolerances,
-            "validation_samples_per_interval": 17, "iterations": int(result.nit),
-            "friction": friction, "seconds": perf_counter() - started}
+    solver_message = "" if result.success else str(getattr(result, "message", ""))
+    output, validation_variables = _build_trajectory_output(
+        payload, problem, robot, result.x, fixed)
+    try:
+        residuals, worst, largest_ratio = problem.validation_residuals(validation_variables, deadline)
+        validation_error = None if largest_ratio <= 1 else f"Validation failed: {worst}."
+    except TrajectoryOptimizeError as error:
+        residuals, validation_error = {}, str(error)
+    error_message = " ".join(part for part in (solver_message, validation_error) if part)
+    result = {"trajectory": output, "residuals": residuals, "tolerances": robot.tolerances,
+              "validation_samples_per_interval": 17, "iterations": int(getattr(result, "nit", 0)),
+              "friction": friction, "max_effort_scale": max_effort_scale,
+              "seconds": perf_counter() - started, "success": validation_error is None}
+    if error_message:
+        result["error"] = error_message
+    return result

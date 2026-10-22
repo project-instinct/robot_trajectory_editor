@@ -116,18 +116,25 @@ export interface TrajectoryOptimizeResult {
   validation_samples_per_interval: number
   iterations: number
   friction?: number
+  max_effort_scale?: number
   seconds?: number
+  success?: boolean
+  error?: string
 }
 
 export async function optimizeTrajectory(
-  trajectory: TrajectoryJSON, keyframes: number[], terrainObj: string | null, urdfPath?: string, friction = 0.7,
+  trajectory: TrajectoryJSON, keyframes: number[], terrainObj: string | null,
+  urdfPath?: string, friction = 0.7, maxEffortScale = 1.0,
 ): Promise<TrajectoryOptimizeResult> {
   const response = await fetch(`${BASE}/trajectory/optimize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ trajectory, keyframes, terrain_obj: terrainObj, urdf_path: urdfPath, friction }),
+    body: JSON.stringify({
+      trajectory, keyframes, terrain_obj: terrainObj, urdf_path: urdfPath,
+      friction, max_effort_scale: maxEffortScale,
+    }),
   })
   const result = await response.json()
-  if (!response.ok) throw new Error(result.error || 'Trajectory Optimize failed')
+  if (!response.ok && !result.trajectory) throw new Error(result.error || 'Trajectory Optimize failed')
   return result
 }

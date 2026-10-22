@@ -522,8 +522,11 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         return finish(best[1])
     if pool is not None:
         pool.terminate()
+    if best is None:
+        raise TrajectoryOptimizeError('Contact optimization failed before a candidate was available.')
     worst = max(best[2], key=lambda name: best[2][name]/problem.robot.tolerances[name])
     summary = ', '.join(f'{name} {best[2][name]:.6g}' for name in problem.robot.tolerances)
-    raise TrajectoryOptimizeError(f'Contact optimization failed: {worst} residual {best[2][worst]:.6g} '
-                          f'(tolerance {problem.robot.tolerances[worst]:g}). Best residuals: {summary}. '
-                          f'Fixed keyframes were not relaxed.')
+    return SimpleNamespace(x=best[1], nit=iterations, success=False,
+                           message=f'Contact optimization failed: {worst} residual {best[2][worst]:.6g} '
+                                   f'(tolerance {problem.robot.tolerances[worst]:g}). Best residuals: {summary}. '
+                                   f'Fixed keyframes were not relaxed.')

@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--friction', type=float, default=.7)
     parser.add_argument('--contact-free', action='store_true')
     parser.add_argument('--time-budget', type=float, default=45.)
+    parser.add_argument('--max-effort-scale', type=float, default=1.)
     parser.add_argument('--global-worst', action='store_true',
                         help='log the best parent-merged contact residual and its worst sample')
     args = parser.parse_args()
@@ -164,7 +165,13 @@ def main():
     try:
         result = optimize_trajectory(payload, [], str(args.urdf), terrain_text(args.terrain),
                                     friction=None if args.contact_free else args.friction,
-                                    time_budget=args.time_budget)
+                                    time_budget=args.time_budget,
+                                    max_effort_scale=args.max_effort_scale)
+        if not result.get('success', True):
+            print(json.dumps({'stage': 'failed', 'seconds': perf_counter()-started,
+                              'error': result.get('error'), 'residuals': result.get('residuals'),
+                              'preview_frames': len(result.get('trajectory', {}).get('base_pos_w', []))}), flush=True)
+            raise SystemExit(1)
         print(json.dumps({'stage': 'validated', 'seconds': perf_counter()-started,
                           'residuals': result['residuals']}), flush=True)
     except Exception as error:

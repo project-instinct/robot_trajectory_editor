@@ -308,6 +308,11 @@ def test_force_derivatives_match_finite_difference_with_rotating_articulated_bas
             np.testing.assert_allclose(derivatives[field][:, axis], actual, atol=2e-7, rtol=2e-6)
 
 
+def test_effort_scale_expands_urdf_limits(articulated_urdf):
+    robot = RobotDynamics(articulated_urdf, ['hinge'], None, lambda _: None, effort_scale=2.)
+    assert robot.effort == pytest.approx([40.])
+
+
 @pytest.mark.parametrize('height', [2., -.1])
 def test_collision_derivatives_match_finite_difference(articulated_urdf, height):
     robot = RobotDynamics(articulated_urdf, ['hinge'], None, lambda _: None)
