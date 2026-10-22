@@ -134,11 +134,14 @@ def test_real_model_free_fall_preserves_keyframes_and_metadata(sphere_urdf, fixe
         assert value <= result["tolerances"][name]
 
 
-def test_real_model_optimizes_without_anchors(sphere_urdf):
+def test_real_model_optimizes_interior_without_anchors(sphere_urdf):
     data = motion(3)
     data["base_pos_w"] = [[0, 0, 2] for _ in range(3)]
     output = optimize_trajectory(data, [], sphere_urdf)["trajectory"]
     assert output["base_pos_w"] != data["base_pos_w"]
+    for frame in (0, 2):
+        for field in ("joint_pos", "base_pos_w", "base_quat_w"):
+            assert output[field][frame] == data[field][frame]
 
 
 def test_real_model_rejects_fixed_ground_penetration(sphere_urdf):
@@ -429,7 +432,7 @@ def test_contact_penalty_gradient_matches_finite_difference(sphere_urdf):
 
 def test_contact_optimization_repairs_ground_penetration(sphere_urdf):
     data = motion(3)
-    data['base_pos_w'] = [[0., 0., .095] for _ in range(3)]
+    data['base_pos_w'] = [[0., 0., .1], [0., 0., .095], [0., 0., .1]]
     before = copy.deepcopy(data)
     result = optimize_trajectory(data, [], sphere_urdf, friction=.7)
     assert data == before

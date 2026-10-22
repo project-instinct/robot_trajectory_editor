@@ -118,7 +118,7 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 
 **Trajectory Optimize** optimizes the entire edited motion, regardless of the timeline
 selection. Every keyframe anchor fixes all joints and the full base pose exactly.
-Without anchors, every frame is eligible. Successful results update the editor as
+Without anchors, the start and end frames are fixed boundary conditions and only the interior frames are eligible. Successful results update the editor as
 one undo step. Solver/model/validation failures preserve the original data;
 results are also discarded if the trajectory or scene changes during the request.
 

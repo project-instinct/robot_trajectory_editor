@@ -847,6 +847,10 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     from time import perf_counter
     started = perf_counter()
     names, rate, positions, joints, quats, fixed = read_trajectory(payload, keyframes)
+    # With no tagged keyframes the trajectory endpoints are the boundary
+    # conditions; only the interior frames are optimized.
+    if not fixed:
+        fixed = [0, len(positions) - 1]
     robot = RobotDynamics(urdf_path, names, terrain_obj, resolve_mesh, friction)
     deadline = started + time_budget if friction is not None else None
     from scipy.optimize import minimize, NonlinearConstraint
@@ -917,8 +921,13 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     if not result.success:
         residual = float(np.max(np.abs(problem.equalities(result.x))))
         violation = max(0., -float(np.min(problem.inequalities(result.x))))
-        raise TrajectoryOptimizeError(f"Solver failed: {result.message}. Base dynamics residual {residual:.6g}; "
-                              f"constraint violation {violation:.6g}. Fixed keyframes were not relaxed.")
+        # Iteration limits can stop a solver at an already feasible point.
+        # The independent validation below is the acceptance decision.
+        if residual > robot.tolerances['dynamics'] or violation > max(
+                robot.tolerances['position'], robot.tolerances['velocity'],
+                robot.tolerances['effort'], robot.tolerances['clearance']):
+            raise TrajectoryOptimizeError(f"Solver failed: {result.message}. Base dynamics residual {residual:.6g}; "
+                                  f"constraint violation {violation:.6g}. Fixed keyframes were not relaxed.")
     x, velocity = problem.unpack(result.x)
     output = copy.deepcopy(payload)
     output["base_pos_w"] = x[:, :3].astype(np.float32).tolist()
