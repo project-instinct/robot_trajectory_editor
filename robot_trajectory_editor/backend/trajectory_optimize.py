@@ -851,7 +851,7 @@ class CollocationProblem:
 
 
 def _build_trajectory_output(payload, problem, robot, variables, fixed):
-    x, velocity = problem.unpack(variables)
+    x, _ = problem.unpack(variables)
     output = copy.deepcopy(payload)
     output["base_pos_w"] = x[:, :3].astype(np.float32).tolist()
     output["joint_pos"] = x[:, 6:].astype(np.float32).tolist()
@@ -870,7 +870,12 @@ def _build_trajectory_output(payload, problem, robot, variables, fixed):
         if angle > 1e-9:
             r = min([r + k*2*np.pi*r/angle for k in (-1, 0, 1)], key=lambda v: np.linalg.norm(v-x[i, 3:6]))
         rounded[i, 3:6] = r
-    return output, problem.pack(rounded, velocity)
+    # The saved NPZ contains positions only. The accepted trajectory must be
+    # physically consistent with the velocities implied by those positions,
+    # not with free internal velocities that are never saved.
+    implied = np.gradient(rounded, problem.dt, axis=0,
+                          edge_order=2 if problem.n > 2 else 1)
+    return output, problem.pack(rounded, implied)
 
 
 def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve_mesh=lambda _: None,
