@@ -172,15 +172,23 @@ Contacts are inferred from the motion:
   own height. A fixed frame that hovers more than 1 mm is airborne: its neighbours
   fall from (or rise into) its height ballistically, as a drop or a hop.
 - **Contact schedule.** Each frame schedules the support points that are within
-  2 cm of an upward-facing surface and nearly at rest (or already penetrating),
-  limited to each link's lowest points (within 3 mm) and to links near the frame's
-  lowest support (within 1 cm). The solver holds scheduled points 0.5 mm above the
-  terrain, inside the 1 mm contact margin, and keeps all other geometry clear.
+  2 cm of an upward-facing surface and barely move toward or away from it (below
+  0.3 m/s; sliding along it below 2 m/s is allowed, so a rolling back keeps its
+  support while a swinging foot does not), or are already penetrating. Only each
+  link's lowest points (within 1 mm) and links near the frame's lowest support
+  (within 1 cm) qualify. The solver keeps scheduled points at most 0.9 mm above
+  the terrain, inside the 1 mm contact margin, and all geometry at least 0.05 mm
+  above it.
 
 ### Solver
 
-A damped Gauss-Newton (Levenberg-Marquardt) solve runs over the whole trajectory.
-Every residual of frame *k* depends on frames *k-1..k+1* only, so the normal
+Every constraint (base force, actuator effort, contact height, non-penetration at
+frames and halfway between them, joint position and velocity limits) is a
+least-squares term in physical units (1% of body weight, 1 Nm, 1 mm, 0.01 rad,
+1 rad/s per unit), with an augmented-Lagrangian multiplier. Damped Gauss-Newton
+(Levenberg-Marquardt) solves over the whole trajectory alternate with multiplier
+updates, which drive the violations to zero without huge weights. A constraint kind
+that stops improving gets a ten times larger penalty factor, up to 100. Every residual of frame *k* depends on frames *k-1..k+1* only, so the normal
 equations are block-banded and are solved exactly by a block-tridiagonal
 Cholesky factorization on frame pairs. Residuals and their Jacobians are evaluated
 in parallel by forked worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default up
@@ -189,13 +197,13 @@ are small. The stages are:
 
 1. A kinematic pass without dynamics puts the scheduled points on the terrain and
    clears penetration and limits.
-2. The full problem: base-force residual, actuator excess, contact heights,
-   non-penetration (at frames and halfway between them), joint limits, a term that
-   stays close to the edited poses and one that stays close to its accelerations.
-   The latter stops the solver from shaking a limb at the frame rate to manufacture
-   momentum, which central differences cannot see. The data terms are relaxed in
-   stages whenever progress stalls; the acceleration term keeps a small weight in
-   the last stage for the same reason.
+2. The augmented-Lagrangian loop on the full problem, with two regularization
+   terms: one stays close to the target poses (1 cm or 0.02 rad per unit, weight
+   `1` in the first solve and `1e-2` after it) and one stays close to the target's
+   accelerations (20 m/s² or rad/s² per unit, always at full weight). The latter
+   stops the solver from shaking a limb at the frame rate to manufacture momentum,
+   which central differences cannot see. Each inner solve gets at most a third of
+   the remaining time, so the multipliers are updated before the budget runs out.
 
 The support forces are re-allocated at every evaluation by a bounded least-squares
 problem with the joint torques (solved exactly by an active set over saturated
@@ -217,8 +225,14 @@ at 8 poses per interval (Pinocchio `interpolate`), plus an explicit surface-cros
 check on loaded meshes. Tolerances: base dynamics 0.1% of robot weight in N (Nm
 for moments), with a `1e-3` floor; effort `1e-4` Nm; position `1e-6` rad;
 velocity `1e-6` rad/s; penetration `1e-5` m; quaternion norm error `1e-6` on input.
-The response reports the residuals and tolerances, and the worst violation on
-failure.
+
+Every run returns a plain-text `report` (shown in the dialog with **Copy report**):
+the motion, robot, terrain and parameters, the solver time and stop reason, and
+each violated check with its worst value, frame, location (joint, geometry, or
+unsupported base force/moment), tolerance and the number of frames over it. Checks
+are ordered by their size on the solver's physical scales, not by the ratio to
+their tolerances, which differ by orders of magnitude (`1e-4` Nm of effort against
+0.3 N of base force), so the headline names the physically largest problem.
 
 The model must provide inertial data for physical bodies and collision geometry,
 with a one-to-one mapping between trajectory joints and movable URDF joints.
@@ -246,13 +260,15 @@ python scripts/audit_feasibility.py motion.npz robot.urdf --terrain terrain.stl
 Measured on the development machine (14 cores), μ = 0.7, 45 s budget:
 
 Nokov `diveroll4` (`20251106_diveroll4_simpleLab_noWall`, flat ground, endpoints
-fixed, 751 frames): the reference jitters by 0.83° RMS (high-pass, max 41°, a 1.3
-rad one-frame wrist jump at frame 444). With the defaults the result jitters by
-0.10° RMS (max 4°), 62 joint samples are repaired, and no velocity violation
-remains; with smoothing and glitch repair off the result keeps the reference's
-0.76° jitter. It still fails validation: in the roll (frames 262-453) the
-reference hovers about 9 mm above the ground with no collision geometry in contact,
-which needs 4.5 kN of missing support; 180 s reduces that to 457 N.
+fixed, 751 frames, defaults, 45 s): the reference jitters by 0.83° RMS (high-pass,
+max 41°, a 1.3 rad one-frame wrist jump at frame 444); the result jitters by about
+0.2-0.3° RMS and 62 joint samples are repaired. Outside the dive roll (frames
+262-453) about 150-270 of 559 frames pass every check (7 before the
+augmented-Lagrangian loop). The run fails on the dive itself: the take-off (frames
+about 303-311) needs waist, hip and knee torques beyond the G1 limits, and at frame
+372 the reference body reaches the floor falling at about 2 m/s with nothing to
+brake it, which needs several kN for a frame. Fixing that needs a different landing,
+not a small correction of the reference.
 
 Earlier measurements (before target smoothing):
 

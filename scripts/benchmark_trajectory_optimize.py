@@ -64,9 +64,7 @@ def main():
         payload, args.keyframes, str(args.urdf), terrain_text(args.terrain),
         friction=None if args.contact_free else args.friction,
         time_budget=args.time_budget, max_effort_scale=args.max_effort_scale)
-    print(json.dumps({'success': result['success'], 'seconds': result['seconds'], 'iterations': result['iterations'],
-                      'error': result.get('error'), 'residuals': result['residuals'],
-                      'tolerances': result['tolerances']}), flush=True)
+    print(result['report'], flush=True)
     raise SystemExit(0 if result['success'] else 1)
 
 

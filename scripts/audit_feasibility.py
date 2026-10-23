@@ -47,15 +47,15 @@ def main():
     problem = Problem(robot, Q, [], 1 / rate)
     results = [validate_frame(problem, Q, k) for k in range(len(Q))]
     names = list(results[0][0])
-    worst = {name: max(errors[name] for errors, _ in results) for name in names}
+    worst = {name: max(errors[name] for errors, _, _ in results) for name in names}
     print(json.dumps({'frames': len(Q), 'framerate': rate, 'tolerances': robot.tolerances, 'worst': worst}))
     for start in range(0, len(Q), args.window):
         part = results[start:start + args.window]
         print(json.dumps({'frames': [start, start + len(part) - 1],
-                          'worst': {name: max(errors[name] for errors, _ in part) for name in names},
+                          'worst': {name: max(errors[name] for errors, _, _ in part) for name in names},
                           'dynamics_over_tolerance': sum(int(errors['dynamics'] > robot.tolerances['dynamics'])
-                                                         for errors, _ in part),
-                          'surface_intersection': next((message for _, message in part if message), None)}))
+                                                         for errors, _, _ in part),
+                          'surface_intersection': next((message for _, _, message in part if message), None)}))
 
 
 if __name__ == '__main__':

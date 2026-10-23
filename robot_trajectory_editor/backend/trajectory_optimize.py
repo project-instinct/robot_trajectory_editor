@@ -9,11 +9,12 @@ saved positions alone determine the motion:
 
 (with "-" the Lie-group difference taken at q_k). At every interior frame the
 floating-base inverse dynamics must be explained by bounded joint torques and
-unilateral, friction-limited point support at terrain contacts. A damped
-Gauss-Newton (Levenberg-Marquardt) solve over the whole trajectory drives the
-dynamics, actuator, contact and limit residuals to zero while staying close
-to the edited trajectory. An independent validator then checks the float32
-output with live contact inference, including poses between frames.
+unilateral, friction-limited point support at terrain contacts. An
+augmented-Lagrangian loop of damped Gauss-Newton (Levenberg-Marquardt) solves
+over the whole trajectory drives the dynamics, actuator, contact and limit
+violations to zero while staying close to a smoothed target. An independent
+validator then checks the float32 output with live contact inference,
+including poses between frames.
 """
 import copy
 import io
@@ -35,28 +36,34 @@ class TrajectoryOptimizeError(ValueError):
 TOLERANCES = {"dynamics": 1e-3, "effort": 1e-4, "position": 1e-6, "velocity": 1e-6, "clearance": 1e-5}
 # The validator infers support only from geometry within this terrain gap.
 CONTACT_MARGIN = 1e-3
-# The solver holds scheduled contacts at this gap, inside the margin.
+# Initialization aligns support to this gap; the solver keeps scheduled
+# support points at most CONTACT_HOLD above the terrain, inside the margin.
 CONTACT_TARGET = 5e-4
+CONTACT_HOLD = CONTACT_MARGIN - 1e-4
 # The solver keeps all other geometry at least this far from the terrain.
 CLEARANCE_TARGET = 5e-5
 # Solver weighting: one unit of residual is this much violation. Physical
 # scales keep the least-squares weights within a few decades; the acceptance
 # tolerances above are far too uneven for that. Dynamics is scaled by body
-# weight. The solver works slightly inside the joint limits so that the
-# accepted trajectory meets them exactly.
+# weight. The solver works slightly inside the limits so that the accepted
+# trajectory meets them exactly. Every constraint is a weighted least-squares
+# term whose augmented-Lagrangian multiplier removes the remaining violation.
 SOLVER_SCALE = {"dynamics": 1e-2, "effort": 1., "velocity": 1., "position": 1e-2, "distance": 1e-3}
 SOLVER_MARGIN = {"effort": 1e-3, "velocity": 1e-3, "position": 1e-5}
 # How freely the linearization lets allocated support follow a step, per
 # squared share of body weight a friction-pyramid ray carries (see terms()).
 SUPPORT_DAMPING = .3
-# Contact schedule: support points close to an upward-facing surface whose
-# material point is nearly at rest in the initial trajectory. A link only
-# rests on its lowest points (a tilted foot stands on an edge), and only links
-# near the lowest one of the frame are candidates (not a shin above a foot).
+# Contact schedule: support points close to an upward-facing surface that
+# barely move toward or away from it in the initial trajectory. Sliding along
+# it is allowed up to a limit, so a rolling back keeps its support while a
+# foot swinging past the ground does not. A link only rests on its lowest
+# points (a tilted foot stands on an edge), and only links near the lowest one
+# of the frame are candidates (not a shin above a foot).
 SCHEDULE_GAP = 2e-2
-SCHEDULE_SPEED = .5
+SCHEDULE_NORMAL_SPEED = .3
+SCHEDULE_SLIDE_SPEED = 2.
 SCHEDULE_NORMAL_Z = .5
-SCHEDULE_POINT_BAND = 3e-3
+SCHEDULE_POINT_BAND = 1e-3
 SCHEDULE_LINK_BAND = 1e-2
 # Poses checked between consecutive frames by the validator.
 SUBSAMPLES = 8
@@ -65,9 +72,22 @@ DATA_SCALE = {"base_position": 1e-2, "base_rotation": 2e-2, "joint": 2e-2}
 # Acceleration change from the edited trajectory (m/s^2 or rad/s^2) that counts
 # as one unit of data error. Central differences cannot see a frame-to-frame
 # zigzag in velocity, so without this term the solver may shake a limb at the
-# frame rate to manufacture momentum. It is relaxed less than the pose term.
+# frame rate to manufacture momentum.
 ACCELERATION_SCALE = 20.
-ACCELERATION_WEIGHT_FLOOR = 1e-2
+# Least-squares weights: "data" and "acceleration" scale the two terms that
+# stay close to the target; the others are the augmented-Lagrangian penalty
+# factors of each constraint kind ("middle" is clearance between frames).
+CONSTRAINTS = {"dynamics": False, "effort": True, "position": True, "velocity": True, "contact": True,
+               "clearance": True, "middle": True}  # kind -> is an inequality
+DEFAULT_WEIGHTS = {"data": 1., "acceleration": 1., **dict.fromkeys(CONSTRAINTS, 1.)}
+# Weights of the target terms once the augmented-Lagrangian loop is running.
+# The acceleration term stays at full weight: it is what stops frame-rate
+# shaking, and the multipliers, not a weak regularization, satisfy the
+# constraints.
+REGULARIZATION = {"data": 1e-2, "acceleration": 1.}
+# Largest augmented-Lagrangian penalty factor. Larger factors make the
+# least squares stiff enough that the inner solves stall and limbs shake.
+PENALTY_MAX = 100.
 # Target preparation defaults (user parameters): low-pass cutoff of the target
 # and the joint speed, as a multiple of the URDF limit, that marks a glitch.
 DEFAULT_SMOOTHING_HZ = 8.
@@ -202,6 +222,9 @@ class RobotModel:
         self.joint_q[order] = self.q_indices
         self.lower, self.upper = np.empty(len(names)), np.empty(len(names))
         self.velocity, self.effort = np.empty(len(names)), np.empty(len(names))
+        self.joint_names_v = [None] * len(names)
+        for name, slot in zip(names, order):
+            self.joint_names_v[slot] = name
         self.lower[order], self.upper[order] = lower, upper
         self.velocity[order], self.effort[order] = velocity, effort
 
@@ -487,16 +510,25 @@ class Problem:
             torque += jac[:3].T @ forces.sum(axis=0) + jac[3:].T @ moment
         return torque
 
-    def terms(self, Q, k, jacobian, data_weight=1., dynamics=True, acceleration_weight=None):
-        """Residual vector of frame k, its Jacobian on frames (k-1, k, k+1) and
-        the largest violation of each constraint kind in physical units."""
+    def terms(self, Q, k, jacobian, weights=None, multipliers=None, dynamics=True):
+        """Residual vector of frame k, its Jacobian on frames (k-1, k, k+1),
+        the largest violation of each constraint kind in physical units, and
+        the scaled constraint values for the multiplier update.
+
+        Every constraint is a least-squares term in units of SOLVER_SCALE. With
+        augmented-Lagrangian `multipliers` (per kind, for this frame) and
+        penalty factors in `weights`, an equality c enters as
+        sqrt(rho) * (c + y / rho), an inequality g <= 0 as
+        sqrt(rho) * max(0, g + y / rho).
+        """
         robot, pin, model, data = self.robot, self.robot.pin, self.robot.model, self.robot.data
         nv, dt = self.nv, self.dt
-        if acceleration_weight is None:
-            acceleration_weight = max(data_weight, ACCELERATION_WEIGHT_FLOOR)
+        weights = dict(DEFAULT_WEIGHTS, **(weights or {}))
+        multipliers = multipliers or {}
         q = Q[k]
         residuals, blocks = [], []
         stats = {"dynamics": 0., "effort": 0., "clearance": 0., "contact": 0., "position": 0., "velocity": 0.}
+        values = {}
 
         def add(residual, previous=None, current=None, following=None):
             residuals.append(residual)
@@ -507,17 +539,21 @@ class Problem:
                         block[:, column*nv:(column+1)*nv] = part
                 blocks.append(block)
 
-        def hinge(value, limit, margin):
-            """Indices and signed amounts beyond limit - margin, for |value|."""
-            beyond = np.abs(value) - (limit - margin)
-            hit = np.flatnonzero(beyond > 0)
-            return hit, np.sign(value[hit]) * beyond[hit], float(max(np.max(np.abs(value) - limit, initial=0.), 0.))
+        def constrain(kind, value, inequality):
+            """Shifted residual of one constraint kind; returns the rows that
+            enter the least squares and their factor sqrt(rho)."""
+            values[kind] = value
+            rho = weights[kind]
+            shift = multipliers.get(kind)
+            shifted = value + (shift / rho if shift is not None else 0.)
+            rows = np.flatnonzero(shifted > 0) if inequality else np.arange(len(value))
+            return rows, np.sqrt(rho) * shifted[rows], np.sqrt(rho)
 
         interior = 0 < k < self.n - 1
         if interior and self.free[k-1:k+2].any():
-            # Stay close to the edited trajectory's accelerations.
+            # Stay close to the target's accelerations.
             plus, minus, v, a = self.kinematics(Q, k)
-            scale = ACCELERATION_SCALE * dt**2 / np.sqrt(acceleration_weight)
+            scale = ACCELERATION_SCALE * dt**2 / np.sqrt(weights["acceleration"])
             parts = [None, None, None]
             if jacobian:
                 plus_q = pin.dDifference(model, q, Q[k+1], pin.ArgumentPosition.ARG0)
@@ -544,13 +580,18 @@ class Problem:
                 coefficients = robot.support.coefficients
             else:
                 remainder, coefficients = required, np.empty(0)
+            torque = remainder[6:]
+            stats["dynamics"] = float(np.max(np.abs(remainder[:6])))
+            stats["effort"] = float(max(np.max(np.abs(torque) - robot.effort, initial=0.), 0.))
+            force_scale = SOLVER_SCALE["dynamics"] * robot.weight
+            _, base, base_factor = constrain("dynamics", remainder[:6] / force_scale, False)
             # The allocation used the true actuator bounds; the solver asks
             # for a little headroom below them.
-            saturated, excess, stats["effort"] = hinge(remainder[6:], robot.effort, SOLVER_MARGIN["effort"])
-            stats["dynamics"] = float(np.max(np.abs(remainder[:6])))
+            saturated, effort, effort_factor = constrain(
+                "effort", (np.abs(torque) - (robot.effort - SOLVER_MARGIN["effort"])) / SOLVER_SCALE["effort"], True)
             rows = np.r_[np.arange(6), 6 + saturated]
-            weight = np.r_[np.full(6, 1 / (SOLVER_SCALE["dynamics"] * robot.weight)),
-                           np.full(len(saturated), 1 / SOLVER_SCALE["effort"])]
+            factor = np.r_[np.full(6, base_factor / force_scale),
+                           np.sign(torque[saturated]) * effort_factor / SOLVER_SCALE["effort"]]
             parts = [None, None, None]
             if jacobian:
                 dtau_dq, dtau_dv, mass = (np.array(m) for m in pin.computeRNEADerivatives(model, data, q, v, a))
@@ -573,21 +614,25 @@ class Problem:
                     share = coefficients[active] / robot.weight
                     gram[np.diag_indices_from(gram)] += SUPPORT_DAMPING / share**2
                     projection -= span @ np.linalg.solve(gram, span.T)
-                parts = [weight[:, None] * (projection @ part[rows]) for part in (previous, current, following)]
-            add(weight * np.r_[remainder[:6], excess], *parts)
+                parts = [factor[:, None] * (projection @ part[rows]) for part in (previous, current, following)]
+            add(np.r_[base, effort], *parts)
 
         if self.free[k]:
-            self.geometry_terms(q, k, add, stats, jacobian)
+            self.geometry_terms(q, k, add, constrain, stats, jacobian)
             # Joint position limits, about the middle of each range.
             x = q[robot.joint_q]
             middle, half = (robot.upper + robot.lower) / 2, (robot.upper - robot.lower) / 2
-            hit, beyond, stats["position"] = hinge(x - middle, half, SOLVER_MARGIN["position"])
+            offset = np.where(np.isfinite(half), x - middle, 0.)
+            stats["position"] = float(max(np.max(np.abs(offset) - half, initial=0.), 0.))
+            hit, residual, factor = constrain(
+                "position", np.where(np.isfinite(half), (np.abs(offset) - (half - SOLVER_MARGIN["position"]))
+                                     / SOLVER_SCALE["position"], -np.inf), True)
             if len(hit):
                 part = np.zeros((len(hit), nv))
-                part[np.arange(len(hit)), 6 + hit] = 1 / SOLVER_SCALE["position"]
-                add(beyond / SOLVER_SCALE["position"], current=part)
-            # Stay close to the edited trajectory.
-            scale = self.data_scale / np.sqrt(data_weight)
+                part[np.arange(len(hit)), 6 + hit] = np.sign(offset[hit]) * factor / SOLVER_SCALE["position"]
+                add(residual, current=part)
+            # Stay close to the target.
+            scale = self.data_scale / np.sqrt(weights["data"])
             part = None
             if jacobian:
                 part = pin.dDifference(model, self.reference[k], q, pin.ArgumentPosition.ARG1) / scale[:, None]
@@ -596,30 +641,37 @@ class Problem:
         if k < self.n - 1 and self.free[k:k+2].any():
             # Joint velocity limits on the interval to the next frame.
             rate = (Q[k+1][robot.joint_q] - q[robot.joint_q]) / dt
-            hit, beyond, stats["velocity"] = hinge(rate, robot.velocity, SOLVER_MARGIN["velocity"])
+            stats["velocity"] = float(max(np.max(np.abs(rate) - robot.velocity, initial=0.), 0.))
+            hit, residual, factor = constrain(
+                "velocity", (np.abs(rate) - (robot.velocity - SOLVER_MARGIN["velocity"])) / SOLVER_SCALE["velocity"],
+                True)
             if len(hit):
                 part = np.zeros((len(hit), nv))
-                part[np.arange(len(hit)), 6 + hit] = 1 / (dt * SOLVER_SCALE["velocity"])
-                add(beyond / SOLVER_SCALE["velocity"], current=-part, following=part)
+                part[np.arange(len(hit)), 6 + hit] = np.sign(rate[hit]) * factor / (dt * SOLVER_SCALE["velocity"])
+                add(residual, current=-part, following=part)
             # Non-penetration halfway to the next frame.
             middle = pin.interpolate(model, q, Q[k+1], .5)
             distance, nearest, outward = robot.distances(middle, cull=CONTACT_MARGIN)
-            hit = np.flatnonzero(distance < CLEARANCE_TARGET)
             stats["clearance"] = max(stats["clearance"], float(max(-distance.min(), 0.)))
+            hit, residual, factor = constrain("middle", (CLEARANCE_TARGET - distance) / SOLVER_SCALE["distance"], True)
+            if np.isnan(nearest[hit, 0]).any():
+                # A multiplier keeps a culled geometry active: query it exactly.
+                distance, nearest, outward = robot.distances(middle)
+                hit, residual, factor = constrain("middle", (CLEARANCE_TARGET - distance) / SOLVER_SCALE["distance"],
+                                                  True)
             if len(hit):
                 part = None
                 if jacobian:
                     pin.computeJointJacobians(model, data, middle)
-                    part = np.array([outward[i] @ robot.point_jacobian(i, nearest[i]) for i in hit]) \
-                        * (.5 / SOLVER_SCALE["distance"])
-                add((distance[hit] - CLEARANCE_TARGET) / SOLVER_SCALE["distance"],
-                    current=part if self.free[k] else None, following=part if self.free[k+1] else None)
+                    part = -np.array([outward[i] @ robot.point_jacobian(i, nearest[i]) for i in hit]) \
+                        * (.5 * factor / SOLVER_SCALE["distance"])
+                add(residual, current=part if self.free[k] else None, following=part if self.free[k+1] else None)
 
         residual = np.concatenate(residuals) if residuals else np.empty(0)
         block = np.vstack(blocks) if jacobian and blocks else np.empty((0, 3*nv))
-        return residual, block, stats
+        return residual, block, stats, values
 
-    def geometry_terms(self, q, k, add, stats, jacobian):
+    def geometry_terms(self, q, k, add, constrain, stats, jacobian):
         """Scheduled support points held inside the contact margin; all other
         geometry kept out of the terrain."""
         robot, pin = self.robot, self.robot.pin
@@ -630,27 +682,39 @@ class Problem:
             # A scheduled contact far from the terrain still needs its exact
             # distance and gradient to be pulled back.
             distance, nearest, outward = robot.distances(q)
-        others = np.setdiff1d(np.flatnonzero(distance < CLEARANCE_TARGET), holding)
         stats["clearance"] = max(stats["clearance"], float(max(-distance.min(), 0.)))
-        if not len(keys) and not len(others):
-            return
+        scale = SOLVER_SCALE["distance"]
         if jacobian:
             pin.computeJointJacobians(robot.model, robot.data, q)
-        scale = SOLVER_SCALE["distance"]
         if len(keys):
             support = [robot.support_point(key, nearest, outward) for key in keys]
             gaps = np.array([gap for _, _, gap, _ in support])
-            stats["contact"] = float(np.max(np.abs(gaps - CONTACT_TARGET)))
+            stats["contact"] = float(max(gaps.max() - CONTACT_HOLD, 0.))
+            # Only an upper bound: a curved sole or a tilted foot cannot put
+            # every scheduled point at one height; clearance is the lower bound.
+            hit, residual, factor = constrain("contact", (gaps - CONTACT_HOLD) / scale, True)
+            if len(hit):
+                part = None
+                if jacobian:
+                    part = np.array([support[i][3] @ robot.point_jacobian(support[i][0], support[i][1])
+                                     for i in hit]) * (factor / scale)
+                add(residual, current=part)
+        # Scheduled geometry also stays out: its other points may tilt into
+        # the terrain while the scheduled ones sit at the contact target.
+        clearance = (CLEARANCE_TARGET - distance) / scale
+        hit, residual, factor = constrain("clearance", clearance, True)
+        if np.isnan(nearest[hit, 0]).any():
+            # A multiplier keeps a culled geometry active: query it exactly.
+            distance, nearest, outward = robot.distances(q)
+            if jacobian:
+                pin.computeJointJacobians(robot.model, robot.data, q)
+            clearance = (CLEARANCE_TARGET - distance) / scale
+            hit, residual, factor = constrain("clearance", clearance, True)
+        if len(hit):
             part = None
             if jacobian:
-                part = np.array([normal @ robot.point_jacobian(index, point)
-                                 for index, point, _, normal in support]) / scale
-            add((gaps - CONTACT_TARGET) / scale, current=part)
-        if len(others):
-            part = None
-            if jacobian:
-                part = np.array([outward[i] @ robot.point_jacobian(i, nearest[i]) for i in others]) / scale
-            add((distance[others] - CLEARANCE_TARGET) / scale, current=part)
+                part = -np.array([outward[i] @ robot.point_jacobian(i, nearest[i]) for i in hit]) * (factor / scale)
+            add(residual, current=part)
 
     def contact_force_derivative(self, q, contacts, points, normals, coefficients):
         """Derivative of the support's generalized force with the allocated
@@ -696,7 +760,7 @@ def frame_equations(problem, frames, terms):
     diagonal = np.zeros((count, nv, nv))
     next1, next2 = np.zeros((count, nv, nv)), np.zeros((count, nv, nv))
     gradient = np.zeros((count, nv))
-    for i, (k, (residual, block, _)) in enumerate(zip(frames, terms)):
+    for i, (k, (residual, block, _, _)) in enumerate(zip(frames, terms)):
         if not len(residual):
             continue
         block = block.reshape(len(residual), 3, nv) * movable[k:k+3, None]
@@ -711,11 +775,13 @@ def frame_equations(problem, frames, terms):
 
 
 def _evaluate_frames(args):
-    Q, frames, jacobian, weights, dynamics = args
+    Q, frames, jacobian, weights, multipliers, dynamics = args
     problem = _WORKER["problem"]
-    terms = [problem.terms(Q, k, jacobian, *weights[:1], dynamics, *weights[1:]) for k in frames]
-    cost = sum(float(r @ r) for r, _, _ in terms)
-    return cost, [stats for _, _, stats in terms], frame_equations(problem, frames, terms) if jacobian else None
+    terms = [problem.terms(Q, k, jacobian, weights, None if multipliers is None else multipliers[i], dynamics)
+             for i, k in enumerate(frames)]
+    cost = sum(float(r @ r) for r, _, _, _ in terms)
+    return (cost, [stats for _, _, stats, _ in terms], [values for _, _, _, values in terms],
+            frame_equations(problem, frames, terms) if jacobian else None)
 
 
 def _validate_frames(args):
@@ -727,16 +793,17 @@ class Evaluation:
     """Cost, per-frame violations and (optionally) normal equations of one trajectory."""
 
     def __init__(self, problem, parts):
-        self.cost = sum(cost for cost, _, _ in parts)
-        self.stats = [stats for _, frame_stats, _ in parts for stats in frame_stats]
+        self.cost = sum(cost for cost, _, _, _ in parts)
+        self.stats = [stats for _, frame_stats, _, _ in parts for stats in frame_stats]
+        self.values = [values for _, _, frame_values, _ in parts for values in frame_values]
         self.equations = None
-        if parts[0][2] is not None:
+        if parts[0][3] is not None:
             n, nv = problem.n, problem.nv
             frames = n + 2 + (n % 2)  # even, for pairing in the solve
             diagonal = np.zeros((frames, nv, nv))
             next1, next2 = np.zeros((frames, nv, nv)), np.zeros((frames, nv, nv))
             gradient = np.zeros((frames, nv))
-            for _, _, (start, d, a, b, g) in parts:
+            for _, _, _, (start, d, a, b, g) in parts:
                 end = start + len(d)
                 diagonal[start:end] += d
                 next1[start:end] += a
@@ -777,10 +844,12 @@ class Evaluator:
             return [function(args) for args in arguments]
         return self.pool.map(function, arguments)
 
-    def evaluate(self, Q, jacobian, data_weight=1., dynamics=True, acceleration_weight=None):
-        weights = (data_weight,) if acceleration_weight is None else (data_weight, acceleration_weight)
-        return Evaluation(self.problem, self.map(_evaluate_frames,
-                                                 [(Q, chunk, jacobian, weights, dynamics) for chunk in self.chunks]))
+    def evaluate(self, Q, jacobian, weights=None, multipliers=None, dynamics=True):
+        """Evaluate every frame. `multipliers` is a per-frame list of
+        per-kind arrays, or None."""
+        return Evaluation(self.problem, self.map(_evaluate_frames, [
+            (Q, chunk, jacobian, weights, None if multipliers is None else [multipliers[k] for k in chunk], dynamics)
+            for chunk in self.chunks]))
 
     def validate(self, Q):
         return [item for part in self.map(_validate_frames, [(Q, chunk) for chunk in self.chunks]) for item in part]
@@ -845,7 +914,7 @@ def feasible_in_model(stats, tolerances):
     worst = {name: max(s[name] for s in stats) for name in stats[0]}
     return (worst["dynamics"] <= .5 * tolerances["dynamics"] and worst["effort"] <= .5 * tolerances["effort"]
             and worst["clearance"] <= .5 * tolerances["clearance"] and worst["position"] <= 0.
-            and worst["velocity"] <= 0. and worst["contact"] <= CONTACT_MARGIN - CONTACT_TARGET - 1e-4)
+            and worst["velocity"] <= 0. and worst["contact"] <= 0.)
 
 
 def levenberg_marquardt(problem, Q, evaluate, stop, accept=None, patience=3):
@@ -888,16 +957,61 @@ def levenberg_marquardt(problem, Q, evaluate, stop, accept=None, patience=3):
     return Q, iterations, False
 
 
+def update_multipliers(evaluation, multipliers, weights, previous):
+    """One augmented-Lagrangian update after an inner solve.
+
+    y <- y + rho c for equalities and y <- max(0, y + rho g) for
+    inequalities. A kind whose worst violation has not fallen to a quarter
+    of the previous one gets a ten times larger penalty factor, up to
+    PENALTY_MAX. Returns the worst violation of each kind (scaled units).
+    """
+    worst = {}
+    for kind, inequality in CONSTRAINTS.items():
+        violation = 0.
+        for k, values in enumerate(evaluation.values):
+            value = values.get(kind)
+            if value is None:
+                continue
+            rho = weights[kind]
+            y = multipliers[k].get(kind)
+            if y is None or len(y) != len(value):
+                y = np.zeros(len(value))
+            if inequality:
+                finite = np.where(np.isfinite(value), value, -1e30)
+                multipliers[k][kind] = np.maximum(0., y + rho * finite)
+                violation = max(violation, float(np.max(finite, initial=0.)))
+            else:
+                multipliers[k][kind] = y + rho * value
+                violation = max(violation, float(np.max(np.abs(value), initial=0.)))
+        worst[kind] = violation
+        if violation > .25 * previous.get(kind, np.inf) and weights[kind] < PENALTY_MAX:
+            # Keep the shift y / rho unchanged when the factor grows.
+            weights[kind] *= 10
+            for frame in multipliers:
+                if kind in frame:
+                    frame[kind] = frame[kind] * 10
+    return worst
+
+
 def optimize(problem, Q, evaluator, stop, validate):
     """Whole-trajectory solve until validated or out of time.
 
     A kinematic pass first puts the scheduled contacts on the terrain and
     clears penetration and limits without dynamics, which is cheap and well
-    conditioned. The full problem then relaxes the data term in stages each
-    time progress stalls, so the constraints dominate as it converges.
+    conditioned. Then an augmented-Lagrangian loop: Levenberg-Marquardt on the
+    shifted least squares, a multiplier update, and again. The multipliers
+    drive the constraints to zero while the terms that stay close to the
+    target (and stop frame-rate shaking) keep fixed weights. Each inner solve
+    gets at most a third of the remaining time, so the multipliers are
+    updated well before the budget runs out.
     """
+    def slice_end():
+        now = perf_counter()
+        return min(stop, now + max(.5, (stop - now) / 3))
+
+    weights = dict(DEFAULT_WEIGHTS)
     Q, iterations, _ = levenberg_marquardt(
-        problem, Q, lambda X: evaluator.evaluate(X, True, 1., False), stop, patience=2)
+        problem, Q, lambda X: evaluator.evaluate(X, True, weights, None, False), slice_end(), patience=2)
     validated = {}
 
     def accept(X, evaluation):
@@ -906,40 +1020,53 @@ def optimize(problem, Q, evaluator, stop, validate):
         validated["result"] = validate(X)
         return validated["result"][1] is None
 
-    # The last stage nearly drops the pose term. The acceleration term keeps a
-    # small weight: without it the solver trades base-force error for
-    # frame-rate shaking of the limbs.
-    for weight, acceleration in ((1., None), (1e-2, None), (1e-4, None), (1e-8, 1e-4)):
+    multipliers = [{} for _ in range(problem.n)]
+    previous = {}
+    # One inner solve close to the target, then the regularization settles.
+    for outer in range(10**6):
+        if outer == 1:
+            weights.update(data=REGULARIZATION["data"], acceleration=REGULARIZATION["acceleration"])
         Q, steps, done = levenberg_marquardt(
-            problem, Q, lambda X: evaluator.evaluate(X, True, weight, True, acceleration), stop, accept,
-            patience=3 if acceleration is None else 10)
+            problem, Q, lambda X: evaluator.evaluate(X, True, weights, multipliers), slice_end(), accept)
         iterations += steps
         if done:
             return Q, iterations, None, validated["result"]
         if perf_counter() >= stop:
             return Q, iterations, "time budget exhausted", None
-    return Q, iterations, "converged without meeting every constraint", None
+        previous = update_multipliers(evaluator.evaluate(Q, False, weights, multipliers), multipliers, weights,
+                                      previous)
 
 
 def validate_frame(problem, Q, k):
-    """Independent check of frame k and of the interval to frame k+1."""
+    """Independent check of frame k and of the interval to frame k+1.
+
+    Returns the largest violation of each kind, what it is (joint, geometry
+    or base axis), and a terrain-crossing message or None.
+    """
     robot, pin = problem.robot, problem.robot.pin
     q = Q[k]
     errors = dict.fromkeys(TOLERANCES, 0.)
+    where = dict.fromkeys(TOLERANCES, "")
     message = None
     x = q[robot.joint_q]
-    errors["position"] = float(max(np.max(x - robot.upper, initial=0.), np.max(robot.lower - x, initial=0.), 0.))
+    beyond = np.maximum(x - robot.upper, robot.lower - x)
+    if len(beyond) and beyond.max() > 0:
+        errors["position"], where["position"] = float(beyond.max()), robot.joint_names_v[int(beyond.argmax())]
     samples = [0.] if k == problem.n - 1 else np.arange(SUBSAMPLES) / SUBSAMPLES
     for fraction in samples:
         pose = q if fraction == 0. else pin.interpolate(robot.model, q, Q[k+1], fraction)
         distance, _, _ = robot.distances(pose, cull=CONTACT_MARGIN)
-        errors["clearance"] = max(errors["clearance"], float(max(-distance.min(), 0.)))
+        if -distance.min() > errors["clearance"]:
+            errors["clearance"] = float(-distance.min())
+            where["clearance"] = robot.geometry.geometryObjects[int(distance.argmin())].name + \
+                ("" if fraction == 0. else f" at frame {k + fraction:.3f}")
         crossing = robot.surface_intersection(pose)
         if crossing is not None and message is None:
             message = f"terrain surface intersection at robot geometry {crossing} near frame {k + fraction:.3f}"
     if k < problem.n - 1:
-        rate = (Q[k+1][robot.joint_q] - x) / problem.dt
-        errors["velocity"] = float(max(np.max(np.abs(rate) - robot.velocity, initial=0.), 0.))
+        rate = np.abs(Q[k+1][robot.joint_q] - x) / problem.dt - robot.velocity
+        if len(rate) and rate.max() > 0:
+            errors["velocity"], where["velocity"] = float(rate.max()), robot.joint_names_v[int(rate.argmax())]
     if 0 < k < problem.n - 1:
         _, _, v, a = problem.kinematics(Q, k)
         required = pin.rnea(robot.model, robot.data, q, v, a).copy()
@@ -959,27 +1086,80 @@ def validate_frame(problem, Q, k):
                         maps.append(robot.point_jacobian(index, point).T)
                         normals.append(normal)
             remainder, _ = robot.support.solve(required, maps, normals)
-        errors["dynamics"] = float(np.max(np.abs(remainder[:6])))
-        errors["effort"] = float(max(np.max(np.abs(remainder[6:]) - robot.effort, initial=0.), 0.))
-    return errors, message
+        axis = int(np.argmax(np.abs(remainder[:6])))
+        errors["dynamics"] = float(np.abs(remainder[axis]))
+        where["dynamics"] = "unsupported base force" if axis < 3 else "unsupported base moment"
+        over = np.abs(remainder[6:]) - robot.effort
+        if len(over) and over.max() > 0:
+            errors["effort"], where["effort"] = float(over.max()), robot.joint_names_v[int(over.argmax())]
+    return errors, where, message
+
+
+# Units and the order of checks in the failure report. Checks are ranked by
+# their worst value on a physical scale (the solver's), not by the ratio to
+# their very uneven acceptance tolerances.
+REPORT_UNITS = {"dynamics": "N", "effort": "Nm", "position": "rad", "velocity": "rad/s", "clearance": "m"}
+
+
+def report_unit(name, where):
+    return "Nm" if name == "dynamics" and where.endswith("moment") else REPORT_UNITS[name]
 
 
 def validate(problem, Q, evaluator):
-    """Largest residual of each kind, and a message for the worst violation."""
-    tolerances = problem.robot.tolerances
+    """Validate a trajectory.
+
+    Returns the largest residual of each kind, a headline for the worst
+    violation (None when everything passes) and per-check findings: worst
+    value, its frame and location, and how many frames exceed the tolerance.
+    """
+    robot = problem.robot
+    tolerances = robot.tolerances
     results = evaluator.validate(Q)
     residuals = dict.fromkeys(TOLERANCES, 0.)
-    worst, ratio = None, 1.
-    for k, (errors, message) in enumerate(results):
-        for name, value in errors.items():
-            residuals[name] = max(residuals[name], value)
-            if value / tolerances[name] > ratio:
-                ratio = value / tolerances[name]
-                worst = f"{name} residual {value:.6g} near frame {k} (tolerance {tolerances[name]:g})"
-    crossing = next((message for _, message in results if message), None)
+    findings = {}
+    for name in TOLERANCES:
+        values = np.array([errors[name] for errors, _, _ in results])
+        frame = int(values.argmax())
+        residuals[name] = float(values[frame])
+        findings[name] = {"value": float(values[frame]), "frame": frame, "where": results[frame][1][name],
+                          "frames_over": int(np.sum(values > tolerances[name])), "tolerance": tolerances[name]}
+    scale = {"dynamics": SOLVER_SCALE["dynamics"] * robot.weight, "effort": SOLVER_SCALE["effort"],
+             "position": SOLVER_SCALE["position"], "velocity": SOLVER_SCALE["velocity"],
+             "clearance": SOLVER_SCALE["distance"]}
+    failing = sorted((name for name in TOLERANCES if findings[name]["frames_over"]),
+                     key=lambda name: -findings[name]["value"] / scale[name])
+    crossing = next((message for _, _, message in results if message), None)
+    worst = None
+    if failing:
+        f = findings[failing[0]]
+        worst = (f"{f['where'] or failing[0]} {f['value']:.4g} {report_unit(failing[0], f['where'])} near frame {f['frame']} "
+                 f"(tolerance {f['tolerance']:g})")
     if crossing is not None:
         worst = f"{crossing}; {worst}" if worst else crossing
-    return residuals, worst
+    return residuals, worst, {"order": failing, "checks": findings, "crossing": crossing}
+
+
+def format_report(result, summary, context):
+    """Plain-text report of one run, meant to be copied verbatim."""
+    lines = [f"Trajectory Optimize: {'VALIDATED' if result['success'] else 'FAILED (not physically validated)'}"]
+    for key in ("motion", "robot", "terrain", "parameters"):
+        lines.append(f"{key.capitalize()}: {context[key]}")
+    stopped = context.get("stopped") or "validated"
+    lines.append(f"Solver: {result['seconds']:.1f} s, {result['iterations']} iterations, stopped: {stopped}")
+    checks = summary["checks"]
+    if summary["crossing"]:
+        lines.append(f"Surface crossing: {summary['crossing']}")
+    if summary["order"]:
+        lines.append("Violations (largest first):")
+        for name in summary["order"]:
+            c = checks[name]
+            where = f" ({c['where']})" if c["where"] else ""
+            lines.append(f"  {name:<9} {c['value']:<10.4g} {report_unit(name, c['where']):<5} at frame {c['frame']}{where}; "
+                         f"tolerance {c['tolerance']:g}; over tolerance in {c['frames_over']} frames")
+    passed = [name for name in TOLERANCES if not checks[name]["frames_over"]]
+    if passed:
+        lines.append("Within tolerance: " + ", ".join(f"{name} {checks[name]['value']:.3g}" for name in passed))
+    return "\n".join(lines)
 
 
 def initialize(problem):
@@ -1059,7 +1239,9 @@ def initialize(problem):
         for index in np.flatnonzero(distance < SCHEDULE_GAP):
             for key in robot.support_keys(index, nearest, outward):
                 _, point, gap, normal = robot.support_point(key, nearest, outward)
-                moving = np.linalg.norm(robot.point_jacobian(index, point) @ velocity) >= SCHEDULE_SPEED
+                speed = robot.point_jacobian(index, point) @ velocity
+                moving = (abs(speed @ normal) >= SCHEDULE_NORMAL_SPEED
+                          or np.linalg.norm(speed - (speed @ normal) * normal) >= SCHEDULE_SLIDE_SPEED)
                 if gap < SCHEDULE_GAP and normal[2] > SCHEDULE_NORMAL_Z and (gap < 0 or not moving):
                     candidates.append((key, joints[index], gap))
         lowest = {}
@@ -1242,7 +1424,7 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
         if problem.free.any():
             Q, iterations, reason, checked = optimize(problem, Q, evaluator, deadline - reserve, check)
         output, saved = _build_output(payload, robot, Q, fixed)
-        residuals, worst = checked if checked is not None else validate(problem, saved, evaluator)
+        residuals, worst, summary = checked if checked is not None else validate(problem, saved, evaluator)
     finally:
         evaluator.close()
         blas.restore_original_limits()
@@ -1254,4 +1436,20 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     if worst is not None:
         stopped = f" Optimizer stopped: {reason}." if reason else ""
         result["error"] = f"Validation failed: {worst}.{stopped}"
+    keys = (f"frames {', '.join(map(str, fixed))}" if keyframes
+            else f"none (frames 0 and {len(positions) - 1} fixed)")
+    mass = robot.weight / np.linalg.norm(robot.model.gravity.linear)
+    terrain = ("flat ground z=0" if robot.terrain_mesh is None else
+               f"mesh with {len(robot.terrain_mesh.faces)} triangles, bounds "
+               f"{np.round(robot.terrain_mesh.bounds, 3).tolist()}")
+    context = {
+        "motion": f"{len(positions)} frames at {rate:g} fps, {len(names)} joints; keyframes: {keys}",
+        "robot": f"{Path(urdf_path).name}, mass {mass:.2f} kg",
+        "terrain": terrain,
+        "parameters": (f"friction {friction}, max_effort_scale {max_effort_scale:g}, smoothing {smoothing_hz:g} Hz, "
+                       f"glitch threshold {glitch_speed_scale:g}x ({repaired} joint samples repaired), "
+                       f"budget {time_budget:g} s"),
+        "stopped": reason,
+    }
+    result["report"] = format_report(result, summary, context)
     return result

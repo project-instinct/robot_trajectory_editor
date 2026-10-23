@@ -21,6 +21,7 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
   const [glitchSpeedScale, setGlitchSpeedScale] = useState(DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS.glitchSpeedScale)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [copied, setCopied] = useState(false)
   const [result, setResult] = useState<Awaited<ReturnType<typeof runTrajectoryOptimize>> | null>(null)
 
   const previewing = result?.preview === true
@@ -32,25 +33,31 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
   const run = async () => {
     setBusy(true)
     setResult(null)
+    setCopied(false)
     setMessage('Optimizing the entire trajectory…')
     try {
       const outcome = await runTrajectoryOptimize(urdfPath, () => true,
         { friction, maxEffortScale, smoothingHz, glitchSpeedScale })
       setResult(outcome)
-      const repaired = outcome.repaired_joint_samples
-        ? ` Repaired ${outcome.repaired_joint_samples} glitched joint samples in the target.` : ''
-      if (outcome.success === false) {
+      if (outcome.report) {
+        setMessage('')
+      } else if (outcome.success === false) {
         const details = residualsText(outcome)
-        setMessage(`${outcome.error ?? 'Trajectory optimization failed.'}${repaired}${details ? ` Residuals: ${details}` : ''}`)
+        setMessage(`${outcome.error ?? 'Trajectory optimization failed.'}${details ? ` Residuals: ${details}` : ''}`)
       } else {
-        setMessage(`Trajectory optimization complete. Validated ${outcome.validation_samples_per_interval} samples per interval.` +
-          `${repaired} ${residualsText(outcome)}`)
+        setMessage(`Trajectory optimization complete. ${residualsText(outcome)}`)
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
       setBusy(false)
     }
+  }
+
+  const copyReport = async () => {
+    if (!result?.report) return
+    await navigator.clipboard.writeText(result.report)
+    setCopied(true)
   }
 
   const dump = () => {
@@ -130,6 +137,14 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
           <div style={warningStyle}>Optimization failed — this preview is not physically validated.</div>
         )}
         {message && <div role="status" style={messageStyle}>{message}</div>}
+        {result?.report && (
+          <>
+            <pre role="status" aria-label="Trajectory Optimize report" style={reportStyle}>{result.report}</pre>
+            <button onClick={copyReport} style={{ alignSelf: 'flex-start' }}>
+              {copied ? 'Report copied' : 'Copy report'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -140,7 +155,7 @@ const overlayStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 }
 const panelStyle: React.CSSProperties = {
-  width: 'min(520px, 92vw)', background: '#1e1e1e', color: '#ddd',
+  width: 'min(720px, 94vw)', background: '#1e1e1e', color: '#ddd',
   border: '1px solid #444', borderRadius: '6px', padding: '14px',
   display: 'flex', flexDirection: 'column', gap: '8px',
   maxHeight: '90vh', overflowY: 'auto',
@@ -152,6 +167,10 @@ const labelStyle: React.CSSProperties = {
 const hintStyle: React.CSSProperties = { fontSize: '11px', color: '#999' }
 const warningStyle: React.CSSProperties = {
   fontSize: '12px', color: '#ff9a9a', fontWeight: 600,
+}
+const reportStyle: React.CSSProperties = {
+  fontSize: '11px', margin: 0, padding: '6px', background: '#151515', border: '1px solid #333',
+  whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '260px', overflowY: 'auto', userSelect: 'text',
 }
 const messageStyle: React.CSSProperties = {
   fontSize: '11px', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',

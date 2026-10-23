@@ -8,7 +8,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Problem, RobotModel, TrajectoryOptimizeError,
                                  frame_equations, initialize, optimize_trajectory, read_trajectory,
-                                 repair_glitches, smooth_target, solve_normal_equations, validate_frame)
+                                 repair_glitches, smooth_target, solve_normal_equations, update_multipliers,
+                                 validate_frame)
 
 
 def motion(heights, rate=10., joints=None):
@@ -97,8 +98,9 @@ def test_contact_free_motion_recovers_ballistic_flight_and_keeps_fixed_frames(sp
 
 
 def test_tagged_keyframes_stay_exact_and_others_are_free(sphere_urdf):
+    # Noisy keyframes leave no exact ballistic solution; a short budget suffices.
     data = motion(ballistic(7) + np.r_[0., .01, 0., -.02, 0., .01, 0.])
-    result = optimize_trajectory(data, [0, 3, 6], sphere_urdf, friction=None)
+    result = optimize_trajectory(data, [0, 3, 6], sphere_urdf, friction=None, time_budget=2.)
     output = result["trajectory"]
     for frame in (0, 3, 6):
         assert output["base_pos_w"][frame] == data["base_pos_w"][frame]
@@ -120,11 +122,42 @@ def test_hovering_first_frame_becomes_a_drop(sphere_urdf):
     assert np.all(np.diff(heights[:4]) < 0)
 
 
-def test_static_hover_with_every_frame_fixed_fails_with_preview(sphere_urdf):
+def test_static_hover_with_every_frame_fixed_fails_with_preview_and_report(sphere_urdf):
     result = optimize_trajectory(motion([.15]*4), [0, 1, 2, 3], sphere_urdf, friction=.7)
     assert result["success"] is False
     assert result["residuals"]["dynamics"] == pytest.approx(9.81)
     assert len(result["trajectory"]["base_pos_w"]) == 4
+    assert "unsupported base force 9.81 N near frame 1" in result["error"]
+    report = result["report"].splitlines()
+    assert report[0] == "Trajectory Optimize: FAILED (not physically validated)"
+    assert report[1] == "Motion: 4 frames at 10 fps, 0 joints; keyframes: frames 0, 1, 2, 3"
+    violation = next(line for line in report if line.strip().startswith("dynamics"))
+    assert "9.81" in violation and "N" in violation and "frame 1" in violation and "over tolerance in 2 frames" in violation
+    assert report[-1].startswith("Within tolerance: effort 0")
+
+
+def test_validated_run_reports_every_check_within_tolerance(sphere_urdf):
+    result = optimize_trajectory(motion(ballistic(6)), [], sphere_urdf, friction=None)
+    assert result["success"]
+    assert result["report"].splitlines()[0] == "Trajectory Optimize: VALIDATED"
+    assert "Violations" not in result["report"]
+
+
+def test_multiplier_update_accumulates_violations_and_grows_stalled_penalties():
+    class Stub:
+        values = [{"dynamics": np.array([.5, -.2]), "effort": np.array([-1., .3, -np.inf])}]
+    weights = {"data": 1., "acceleration": 1., "dynamics": 1., "effort": 1., "position": 1., "velocity": 1.,
+               "contact": 1., "clearance": 1., "middle": 1.}
+    multipliers = [{}]
+    worst = update_multipliers(Stub, multipliers, weights, {})
+    np.testing.assert_allclose(multipliers[0]["dynamics"], [.5, -.2])
+    np.testing.assert_allclose(multipliers[0]["effort"], [0., .3, 0.])
+    assert worst["dynamics"] == pytest.approx(.5) and worst["effort"] == pytest.approx(.3)
+    assert weights["dynamics"] == 1.
+    # No progress: the factor grows tenfold, and the shift y / rho is kept.
+    update_multipliers(Stub, multipliers, weights, worst)
+    assert weights["dynamics"] == 10.
+    np.testing.assert_allclose(multipliers[0]["dynamics"] / weights["dynamics"], [1., -.4])
 
 
 def test_fixed_keyframe_penetration_is_rejected(sphere_urdf):
@@ -164,8 +197,9 @@ def test_validator_checks_poses_between_frames(articulated_urdf):
     assert clear
     Q = np.array([pose(clear[0], .6), pose(clear[0], 2.)])
     problem = Problem(robot, Q, [0, 1], .1)
-    errors, _ = validate_frame(problem, Q, 0)
+    errors, where, _ = validate_frame(problem, Q, 0)
     assert errors["clearance"] > 1e-3
+    assert where["clearance"].endswith(tuple("0123456789"))  # names the geometry and the in-between frame
     assert min(robot.distances(q)[0].min() for q in Q) > 0
 
 
@@ -196,7 +230,7 @@ def test_residual_jacobian_matches_finite_differences(articulated_urdf, friction
     problem = Problem(robot, Q.copy(), [0, 4], 1/30)
     initialize(problem)
     for k in (1, 2, 3):
-        residual, block, _ = problem.terms(Q, k, True)
+        residual, block, _, _ = problem.terms(Q, k, True)
         step = rng.normal(size=(3, 7)) * 1e-7
         moved = Q.copy()
         for i, frame in enumerate((k - 1, k, k + 1)):
@@ -204,7 +238,7 @@ def test_residual_jacobian_matches_finite_differences(articulated_urdf, friction
                 moved[frame] = robot.pin.integrate(robot.model, Q[frame], step[i])
             else:
                 step[i] = 0.
-        changed, _, _ = problem.terms(moved, k, False)
+        changed, _, _, _ = problem.terms(moved, k, False)
         assert len(changed) == len(residual)
         rows = np.ones(len(residual), dtype=bool)
         if friction is not None:
@@ -219,16 +253,16 @@ def test_block_solver_matches_dense_solve(sphere_urdf):
     rng = np.random.default_rng(1)
     n, nv = 7, 6
     problem = Problem(robot, np.tile(robot.configuration([0, 0, 1.], [1, 0, 0, 0], []), (n, 1)), [0, 4], .1)
-    terms = [(rng.normal(size=4), rng.normal(size=(4, 3 * nv)), {}) for _ in range(n)]
+    terms = [(rng.normal(size=4), rng.normal(size=(4, 3 * nv)), {}, {}) for _ in range(n)]
     # Two worker chunks, as the evaluator would combine them.
-    evaluation = Evaluation(problem, [(0., [], frame_equations(problem, np.arange(3), terms[:3])),
-                                      (0., [], frame_equations(problem, np.arange(3, n), terms[3:]))])
-    evaluation.cost = sum(float(r @ r) for r, _, _ in terms)
+    evaluation = Evaluation(problem, [(0., [], [], frame_equations(problem, np.arange(3), terms[:3])),
+                                      (0., [], [], frame_equations(problem, np.arange(3, n), terms[3:]))])
+    evaluation.cost = sum(float(r @ r) for r, _, _, _ in terms)
     step = solve_normal_equations(evaluation.equations, 1e-2, np.ones(nv))[1:n+1]
     # Dense reference over the free frames only.
     total = np.zeros((n * nv, n * nv))
     gradient = np.zeros(n * nv)
-    for k, (residual, block, _) in enumerate(terms):
+    for k, (residual, block, _, _) in enumerate(terms):
         full = np.zeros((len(residual), (n + 2) * nv))
         full[:, k*nv:(k+3)*nv] = block
         full = full[:, nv:-nv]
@@ -246,7 +280,7 @@ def test_block_solver_matches_dense_solve(sphere_urdf):
     padded = np.zeros((n + 2, nv))
     padded[1:-1] = step
     model = sum(float(np.sum((r + B @ np.where(np.r_[False, problem.free, False][k:k+3, None], padded[k:k+3], 0.)
-                                .ravel())**2)) for k, (r, B, _) in enumerate(terms))
+                                .ravel())**2)) for k, (r, B, _, _) in enumerate(terms))
     assert evaluation.predicted(step) == pytest.approx(model, rel=1e-10)
 
 

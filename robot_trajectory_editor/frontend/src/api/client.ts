@@ -123,6 +123,8 @@ export interface TrajectoryOptimizeResult {
   seconds?: number
   success?: boolean
   error?: string
+  /** Plain-text summary of the run, meant to be copied verbatim. */
+  report?: string
 }
 
 /** User parameters of one Trajectory Optimize request. */
