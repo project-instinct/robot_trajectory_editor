@@ -100,14 +100,17 @@ def test_friction_pyramid_is_inside_cone_for_sloped_normal():
 
 
 @pytest.mark.parametrize('effort', [50., 5., .5])
-def test_saturation_active_set_matches_general_qp(effort, monkeypatch):
+def test_saturation_active_set_matches_bounded_least_squares(effort):
     # Random multi-contact allocations, from unsaturated to mostly saturated
-    # actuators, must give the same residual as the general bounded QP.
+    # actuators, must reach the optimum of the same bounded least squares,
+    # solved here independently and tightly.
+    from scipy.optimize import lsq_linear
     rng = np.random.default_rng(0)
     joints = 4
-    fast = SupportForces(np.full(joints, effort), .7)
-    general = SupportForces(np.full(joints, effort), .7)
-    monkeypatch.setattr(general, '_saturation_active_set', lambda *args: None)
+    solver = SupportForces(np.full(joints, effort), .7)
+    used = []
+    original = solver._saturation_active_set
+    solver._saturation_active_set = lambda *args: used.append(1) or original(*args)
     for _ in range(20):
         maps = []
         for _ in range(3):
@@ -116,10 +119,13 @@ def test_saturation_active_set_matches_general_qp(effort, monkeypatch):
             maps.append(mapping)
         normals = [[0, 0, 1]] * 3
         required = np.r_[rng.normal(size=6)*10 + [0, 0, 100, 0, 0, 0], rng.normal(size=joints)*20]
-        costs = rng.uniform(0, 1e-3, size=3)
-        residual, _ = fast.solve(required, maps, normals, costs)
-        expected, _ = general.solve(required, maps, normals, costs)
-        np.testing.assert_allclose(residual[:6], expected[:6], atol=1e-4)
-        torque, limit = residual[6:], fast.effort_limits
-        np.testing.assert_allclose(np.maximum(np.abs(torque) - limit, 0),
-                                   np.maximum(np.abs(expected[6:]) - limit, 0), atol=1e-4)
+        residual, _ = solver.solve(required, maps, normals)
+        contacts = np.hstack([m @ friction_rays(n, .7) for m, n in zip(maps, normals)])
+        matrix = np.hstack([contacts, np.eye(6 + joints)[:, 6:]])
+        bounds = (np.r_[np.zeros(12), np.full(joints, -effort)], np.r_[np.full(12, np.inf), np.full(joints, effort)])
+        best = lsq_linear(matrix, required, bounds=bounds, method='bvls', tol=1e-12).x
+        expected = required - contacts @ best[:12]
+        np.testing.assert_allclose(residual[:6], expected[:6], atol=1e-6)
+        np.testing.assert_allclose(np.maximum(np.abs(residual[6:]) - effort, 0),
+                                   np.maximum(np.abs(expected[6:]) - effort, 0), atol=1e-6)
+    assert used

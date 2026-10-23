@@ -7,3 +7,4 @@ coal>=3,<4
 trimesh>=4
 rtree>=1
 osqp>=1,<2
+threadpoolctl>=3.1,<4

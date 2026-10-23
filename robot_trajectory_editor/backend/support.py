@@ -85,14 +85,15 @@ class SupportForces:
             saturated = update
         return None
 
-    def solve(self, required, point_maps, normals, costs=None):
+    def solve(self, required, point_maps, normals):
         """Return inverse dynamics minus physically admissible contact forces.
 
         point_maps[k] maps a world force at contact k into generalized forces,
-        ordered as the six base forces followed by trajectory joint order.
-        Actuator bounds participate in force distribution, so support that
-        requires excessive joint torque is not treated as dynamically feasible.
-        Optional per-contact costs make the allocation prefer some contacts.
+        ordered as the six base forces followed by the joints in the order of
+        the effort limits. Actuator bounds participate in force distribution,
+        so support that requires excessive joint torque is not treated as
+        dynamically feasible. After the call, `coefficients` holds the weight of
+        each contact's four friction-pyramid rays.
         """
         required = np.asarray(required)
         if not len(point_maps):
@@ -100,6 +101,7 @@ class SupportForces:
             return required.copy(), np.empty((0, 3))
         rays = [friction_rays(n, self.friction) for n in normals]
         contacts = np.hstack([mapping @ ray for mapping, ray in zip(point_maps, rays)])
+        self.contacts = contacts
         actuators = np.eye(len(required))[:, 6:]
         matrix = np.hstack([contacts, actuators])
         force_count = contacts.shape[1]
@@ -107,8 +109,6 @@ class SupportForces:
         lower = np.r_[np.zeros(force_count), -self.effort_limits]
         upper = np.r_[np.full(force_count, np.inf), self.effort_limits]
         regularization = np.full(count, 1e-10)
-        if costs is not None:
-            regularization[:force_count] += np.repeat(costs, 4)
         coefficients = self._saturation_active_set(required, contacts, regularization[:force_count])
         if coefficients is not None:
             self.coefficients = coefficients.copy()

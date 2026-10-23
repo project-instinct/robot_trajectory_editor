@@ -1,23 +1,19 @@
-"""Benchmark Trajectory Optimize on a fixed prefix of a real NPZ (run on the compute host).
+"""Run Trajectory Optimize on a real NPZ and report progress and the result as JSON lines.
 
-Use an external wall-clock limit, e.g. timeout 180s python ... . Progress is
-flushed after each stage so a timed-out solve still leaves useful measurements.
+Example:
+    python scripts/benchmark_trajectory_optimize.py motion.npz robot.urdf --terrain terrain.stl --frames 750
 """
 import argparse
 import json
-from pathlib import Path
-import resource
 import sys
-import traceback
+from pathlib import Path
 from time import perf_counter
 
-import numpy as np
-import scipy.optimize
 import trimesh
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'robot_trajectory_editor/backend'))
+import trajectory_optimize
 from npz_io import parse_npz
-from trajectory_optimize import optimize_trajectory
 
 
 def terrain_text(path):
@@ -25,153 +21,53 @@ def terrain_text(path):
         return None
     if path.suffix.lower() == '.obj':
         return path.read_text()
-    mesh = trimesh.load(path, force='mesh')
-    text = mesh.export(file_type='obj')
+    text = trimesh.load(path, force='mesh').export(file_type='obj')
     return text.decode() if isinstance(text, bytes) else text
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('trajectory', type=Path)
     parser.add_argument('urdf', type=Path)
     parser.add_argument('--terrain', type=Path)
-    parser.add_argument('--frames', type=int, default=750)
-    parser.add_argument('--mode', choices=('constraints', 'solve'), default='constraints')
-    parser.add_argument('--iterations', type=int, default=20)
+    parser.add_argument('--frames', type=int, default=0, help='prefix length; 0 means all frames')
+    parser.add_argument('--keyframes', type=int, nargs='*', default=[])
     parser.add_argument('--friction', type=float, default=.7)
     parser.add_argument('--contact-free', action='store_true')
     parser.add_argument('--time-budget', type=float, default=45.)
     parser.add_argument('--max-effort-scale', type=float, default=1.)
-    parser.add_argument('--global-worst', action='store_true',
-                        help='log the best parent-merged contact residual and its worst sample')
+    parser.add_argument('--every', type=int, default=10, help='log every N-th evaluation')
     args = parser.parse_args()
+
     payload = parse_npz(args.trajectory.read_bytes())
-    for field in ('base_pos_w', 'base_quat_w', 'joint_pos'):
-        payload[field] = payload[field][:args.frames]
+    if args.frames:
+        for field in ('base_pos_w', 'base_quat_w', 'joint_pos'):
+            payload[field] = payload[field][:args.frames]
     print(json.dumps({'trajectory': str(args.trajectory), 'frames': len(payload['base_pos_w']),
-                      'framerate': payload['framerate'], 'joints': len(payload['joint_names']),
-                      'mode': args.mode, 'friction': None if args.contact_free else args.friction}), flush=True)
-    original = scipy.optimize.minimize
+                      'framerate': payload['framerate'], 'joints': len(payload['joint_names'])}), flush=True)
     started = perf_counter()
+    original = trajectory_optimize.Evaluator.evaluate
+    count = [0]
 
-    def measure(name, function):
-        start = perf_counter()
-        value = function()
-        print(json.dumps({'stage': name, 'seconds': perf_counter()-start,
-                          'shape': list(value.shape), 'nnz': getattr(value, 'nnz', None),
-                          'peak_rss_mib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024}), flush=True)
-        return value
-
-    def minimize(function, initial, **kwargs):
-        if not args.contact_free:
-            kwargs['options']['maxiter'] = args.iterations
-            return original(function, initial, **kwargs)
-        print(json.dumps({'stage': 'setup', 'seconds': perf_counter()-started,
-                          'variables': len(initial)}), flush=True)
-        if args.mode == 'constraints':
-            for name, constraint in zip(('equalities', 'inequalities'), kwargs['constraints']):
-                f = constraint['fun'] if isinstance(constraint, dict) else constraint.fun
-                jac = constraint['jac'] if isinstance(constraint, dict) else constraint.jac
-                measure(name, lambda: f(initial))
-                measure(name + '_jacobian', lambda: jac(initial))
-            raise SystemExit(0)
-        kwargs['options']['maxiter'] = args.iterations
-        if kwargs['method'] == 'trust-constr':
-            def callback(x, state):
-                print(json.dumps({'iteration': state.nit, 'seconds': perf_counter()-started,
-                                  'objective': float(state.fun), 'constraint_violation': float(state.constr_violation)}), flush=True)
-            kwargs['callback'] = callback
-        result = original(function, initial, **kwargs)
-        print(json.dumps({'stage': 'solver', 'seconds': perf_counter()-started,
-                          'success': bool(result.success), 'iterations': int(result.nit),
-                          'message': str(result.message)}), flush=True)
+    def evaluate(self, Q, jacobian, data_weight=1., dynamics=True, acceleration_weight=None):
+        result = original(self, Q, jacobian, data_weight, dynamics, acceleration_weight)
+        if count[0] % args.every == 0:
+            worst = {name: max(s[name] for s in result.stats) for name in result.stats[0]}
+            print(json.dumps({'evaluation': count[0], 'seconds': round(perf_counter() - started, 2),
+                              'data_weight': data_weight, 'dynamics_stage': dynamics, 'cost': result.cost,
+                              'worst': worst}), flush=True)
+        count[0] += 1
         return result
 
-    scipy.optimize.minimize = minimize
-    if not args.contact_free:
-        import trajectory_optimize_contacts
-        original_contacts = trajectory_optimize_contacts.solve_contacts
-
-        def contact_solve(problem, initial, deadline):
-            print(json.dumps({'stage': 'setup', 'seconds': perf_counter()-started,
-                              'variables': len(initial)}), flush=True)
-            if args.mode == 'constraints':
-                objective = trajectory_optimize_contacts.ContactObjective(problem, deadline)
-                measure('contact_values', lambda: np.atleast_1d(objective.evaluate(initial, gradient=False)[0]))
-                print(json.dumps({'residuals': objective.errors}), flush=True)
-                measure('contact_gradient', lambda: objective.evaluate(initial)[1])
-                raise SystemExit(0)
-            original_evaluate = trajectory_optimize_contacts.ContactObjective.evaluate
-            def evaluated(objective, variables, gradient=True, **options):
-                start = perf_counter()
-                value = original_evaluate(objective, variables, gradient, **options)
-                print(json.dumps({'stage': 'contact_evaluation', 'gradient': gradient,
-                                  'seconds': perf_counter()-start, 'elapsed': perf_counter()-started,
-                                  'objective': float(value[0]), 'residuals': objective.errors}), flush=True)
-                return value
-            trajectory_optimize_contacts.ContactObjective.evaluate = evaluated
-            if args.global_worst:
-                original_parallel = trajectory_optimize_contacts.evaluate_parallel
-                best_score = {'scheduled': float('inf'), 'live': float('inf')}
-                best_dynamics = {'scheduled': float('inf'), 'live': float('inf')}
-
-                def merged(objective, pool, chunks, variables, gradient=True, live=False):
-                    mode = 'live' if live else 'scheduled'
-                    result = original_parallel(objective, pool, chunks, variables, gradient, live)
-                    score = max(objective.errors[name] / problem.robot.tolerances[name]
-                                for name in objective.errors)
-                    dynamics = objective.errors['dynamics']
-                    improved = []
-                    if score < best_score[mode]:
-                        best_score[mode] = score
-                        improved.append('score')
-                    if dynamics < best_dynamics[mode]:
-                        best_dynamics[mode] = dynamics
-                        improved.append('dynamics')
-                    if improved:
-                        sample, axis = np.unravel_index(
-                            np.abs(objective.dynamics_residual).argmax(),
-                            objective.dynamics_residual.shape)
-                        frame, offset = divmod(sample, len(objective.fractions))
-                        fraction = objective.fractions[offset]
-                        x, v = problem.unpack(variables)
-                        q = trajectory_optimize_contacts.hermite(
-                            x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)[0]
-                        problem.robot.clearances(q)
-                        contacts = len(problem.robot.contact_geometry[q.tobytes()][0])
-                        scheduled = (len(objective.schedules[sample])
-                                     if not live and objective.schedules is not None else None)
-                        print(json.dumps({'stage': 'global_best', 'elapsed': perf_counter()-started,
-                                          'mode': mode, 'improved': improved, 'score': score,
-                                          'residuals': objective.errors,
-                                          'worst_dynamics': {'value': float(np.abs(
-                                              objective.dynamics_residual[sample, axis])),
-                                              'frame': int(frame), 'fraction': float(fraction),
-                                              'axis': int(axis), 'contacts': contacts,
-                                              'scheduled': scheduled}}), flush=True)
-                    return result
-
-                trajectory_optimize_contacts.evaluate_parallel = merged
-            return original_contacts(problem, initial, deadline)
-
-        trajectory_optimize_contacts.solve_contacts = contact_solve
-    try:
-        result = optimize_trajectory(payload, [], str(args.urdf), terrain_text(args.terrain),
-                                    friction=None if args.contact_free else args.friction,
-                                    time_budget=args.time_budget,
-                                    max_effort_scale=args.max_effort_scale)
-        if not result.get('success', True):
-            print(json.dumps({'stage': 'failed', 'seconds': perf_counter()-started,
-                              'error': result.get('error'), 'residuals': result.get('residuals'),
-                              'preview_frames': len(result.get('trajectory', {}).get('base_pos_w', []))}), flush=True)
-            raise SystemExit(1)
-        print(json.dumps({'stage': 'validated', 'seconds': perf_counter()-started,
-                          'residuals': result['residuals']}), flush=True)
-    except Exception as error:
-        traceback.print_exc()
-        print(json.dumps({'stage': 'failed', 'seconds': perf_counter()-started,
-                          'error': str(error)}), flush=True)
-        raise SystemExit(1)
+    trajectory_optimize.Evaluator.evaluate = evaluate
+    result = trajectory_optimize.optimize_trajectory(
+        payload, args.keyframes, str(args.urdf), terrain_text(args.terrain),
+        friction=None if args.contact_free else args.friction,
+        time_budget=args.time_budget, max_effort_scale=args.max_effort_scale)
+    print(json.dumps({'success': result['success'], 'seconds': result['seconds'], 'iterations': result['iterations'],
+                      'error': result.get('error'), 'residuals': result['residuals'],
+                      'tolerances': result['tolerances']}), flush=True)
+    raise SystemExit(0 if result['success'] else 1)
 
 
 if __name__ == '__main__':
