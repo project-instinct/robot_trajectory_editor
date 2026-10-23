@@ -71,7 +71,7 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
         <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
           {!result && (
             <button disabled={busy || !validInputs} onClick={run}>
-              {busy ? 'Optimizing…' : 'Run'}
+              {busy ? 'Optimizing…' : 'Apply'}
             </button>
           )}
           {previewing && (
@@ -83,6 +83,10 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
           {!previewing && !busy && (
             <button onClick={onClose}>{result ? 'Close' : 'Cancel'}</button>
           )}
+        </div>
+        <div style={hintStyle}>
+          Apply starts optimization. A validated result is applied as one undo step;
+          if it fails, keep or dump the preview.
         </div>
         {message && <div role="status" style={messageStyle}>{message}</div>}
       </div>
