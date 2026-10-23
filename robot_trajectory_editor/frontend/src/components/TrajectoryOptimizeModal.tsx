@@ -32,7 +32,8 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
       const outcome = await runTrajectoryOptimize(urdfPath, () => true, friction, maxEffortScale)
       setResult(outcome)
       if (outcome.success === false) {
-        setMessage(outcome.error ?? 'Trajectory optimization failed.')
+        const details = residualsText(outcome)
+        setMessage(`${outcome.error ?? 'Trajectory optimization failed.'}${details ? ` Residuals: ${details}` : ''}`)
       } else {
         setMessage(`Trajectory optimization complete. Validated ${outcome.validation_samples_per_interval} samples per interval. ` +
           residualsText(outcome))
@@ -82,7 +83,7 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
           )}
           {previewing && (
             <>
-              <button onClick={onClose}>Keep</button>
+              <button onClick={onClose}>Keep anyway</button>
               <button onClick={dump}>Dump</button>
             </>
           )}
@@ -97,6 +98,9 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
           Apply starts optimization. A validated result is applied as one undo step;
           if it fails, keep or dump the preview.
         </div>
+        {result?.success === false && (
+          <div style={warningStyle}>Optimization failed — this preview is not physically validated.</div>
+        )}
         {message && <div role="status" style={messageStyle}>{message}</div>}
       </div>
     </div>
@@ -118,6 +122,9 @@ const labelStyle: React.CSSProperties = {
   fontSize: '12px', gap: '8px',
 }
 const hintStyle: React.CSSProperties = { fontSize: '11px', color: '#999' }
+const warningStyle: React.CSSProperties = {
+  fontSize: '12px', color: '#ff9a9a', fontWeight: 600,
+}
 const messageStyle: React.CSSProperties = {
   fontSize: '11px', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
   maxHeight: '160px', overflowY: 'auto',
