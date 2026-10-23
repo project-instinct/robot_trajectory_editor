@@ -52,7 +52,13 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
   return (
     <div style={overlayStyle}>
       <div style={panelStyle}>
-        <h3 style={{ margin: 0 }}>Trajectory Optimize</h3>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h3 style={{ margin: 0 }}>Trajectory Optimize</h3>
+          {!previewing && (
+            <button aria-label="Close Trajectory Optimize" onClick={onClose} disabled={busy}
+              style={{ padding: '0 8px', fontSize: '16px', lineHeight: '22px' }}>×</button>
+          )}
+        </div>
         <label style={labelStyle}>
           Max effort scale
           <input aria-label="Maximum effort scale" type="number" min="1" step="0.05"
@@ -80,8 +86,11 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
               <button onClick={dump}>Dump</button>
             </>
           )}
-          {!previewing && !busy && (
-            <button onClick={onClose}>{result ? 'Close' : 'Cancel'}</button>
+          {result && !previewing && (
+            <button onClick={onClose}>Close</button>
+          )}
+          {!result && !busy && (
+            <button onClick={onClose}>Cancel</button>
           )}
         </div>
         <div style={hintStyle}>
@@ -102,6 +111,7 @@ const panelStyle: React.CSSProperties = {
   width: 'min(520px, 92vw)', background: '#1e1e1e', color: '#ddd',
   border: '1px solid #444', borderRadius: '6px', padding: '14px',
   display: 'flex', flexDirection: 'column', gap: '8px',
+  maxHeight: '90vh', overflowY: 'auto',
 }
 const labelStyle: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
