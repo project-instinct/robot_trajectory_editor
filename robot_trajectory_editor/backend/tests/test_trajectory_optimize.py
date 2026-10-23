@@ -457,32 +457,43 @@ def test_stance_alignment_measures_shape_distance_instead_of_bounding_sphere(sph
     assert 0 < robot.clearances(reference[0])[0] < .02
     assert robot.clearances(reference[0], exact=True)[0] == pytest.approx(.045)
     problem = CollocationProblem(robot, reference, [], 1/90)
-    offset, velocity = stance_offset(problem, reference, lambda: None)
+    offset = stance_offset(problem, reference, lambda: None)
     corrected = reference.copy()
     corrected[:, 2] += offset
-    velocities = np.zeros_like(reference)
-    velocities[:, 2] = velocity
     # A stationary hovering foot becomes supported without injecting motion or
     # changing the contact margin, and passes the actual dense validator.
     np.testing.assert_allclose(corrected[:, 2], .0105, atol=1e-12)
-    np.testing.assert_allclose(velocity, 0., atol=1e-12)
-    problem.validate(problem.pack(corrected, velocities))
+    problem.validate(problem.consistent(corrected))
 
 
-def test_stance_offset_preserves_fixed_pose_and_continuous_acceleration(sphere_urdf):
+def test_stance_offset_turns_hovering_fixed_pose_into_ballistic_flight(sphere_urdf):
     from trajectory_optimize_contacts import stance_offset
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
     reference = np.tile([0., 0., .14, 0., 0., 0.], (101, 1))
     problem = CollocationProblem(robot, reference, [50], .01)
-    offset, velocity = stance_offset(problem, reference, lambda: None)
-    assert offset[50] == pytest.approx(0., abs=1e-12)
-    assert offset[0] < -.03
-    # This checks the reconstructed curve, including both sides of each knot
-    # and the fixed pose, rather than just the sampled offset values.
-    for frame in range(1, problem.n-1):
-        left = hermite(offset[frame-1], offset[frame], velocity[frame-1], velocity[frame], problem.dt, 1.)[2]
-        right = hermite(offset[frame], offset[frame+1], velocity[frame], velocity[frame+1], problem.dt, 0.)[2]
-        assert left == pytest.approx(right, abs=1e-8)
+    offset = stance_offset(problem, reference, lambda: None)
+    assert offset[50] == 0.
+    # Away from the fixed hovering pose the body rests on the ground.
+    np.testing.assert_allclose(offset[:20], -.0395, atol=1e-6)
+    np.testing.assert_allclose(offset[-20:], -.0395, atol=1e-6)
+    # Next to it the body is in free fall: a hop through the fixed pose.
+    for k in range(1, 8):
+        for frame in (50 - k, 50 + k):
+            assert offset[frame] == pytest.approx(-.5*9.81*(k*.01)**2, abs=1e-12)
+    assert np.all(offset >= -.0395 - 1e-6)
+
+
+def test_stance_offset_starts_with_a_drop_from_hovering_first_frame(sphere_urdf):
+    from trajectory_optimize_contacts import stance_offset
+    robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
+    reference = np.tile([0., 0., .109, 0., 0., 0.], (90, 1))
+    problem = CollocationProblem(robot, reference, [0, 89], 1/90)
+    offset = stance_offset(problem, reference, lambda: None)
+    assert offset[0] == offset[-1] == 0.
+    times = np.arange(90) / 90
+    # Falling 8.5 mm from rest takes about 4 frames, then the body stays down.
+    drop = np.maximum(-.0085, -.5*9.81*times**2)
+    np.testing.assert_allclose(offset[:20], drop[:20], atol=1e-6)
 
 
 def test_stance_offset_leaves_distant_flight_unsupported(sphere_urdf):
@@ -490,9 +501,8 @@ def test_stance_offset_leaves_distant_flight_unsupported(sphere_urdf):
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
     reference = np.tile([0., 0., 2., 0., 0., 0.], (40, 1))
     problem = CollocationProblem(robot, reference, [], 1/90)
-    offset, velocity = stance_offset(problem, reference, lambda: None)
+    offset = stance_offset(problem, reference, lambda: None)
     np.testing.assert_array_equal(offset, 0.)
-    np.testing.assert_array_equal(velocity, 0.)
     assert not robot.contact_geometry[reference[0].tobytes()][0]
 
 

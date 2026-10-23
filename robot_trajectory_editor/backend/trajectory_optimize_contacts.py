@@ -227,17 +227,42 @@ class ContactObjective:
         return loss, np.r_[gx[problem.free].ravel(), gv.ravel()]
 
 
+def fixed_frame_taper(problem, width):
+    """Per-frame weight that is 0 at fixed frames and rises C1-smoothly to 1.
+
+    Corrections multiplied by it leave fixed poses untouched without the kink
+    a hard mask would put between a fixed frame and its corrected neighbour.
+    """
+    fixed = np.setdiff1d(np.arange(problem.n), problem.free)
+    if not len(fixed):
+        return np.ones(problem.n)
+    distance = np.min(np.abs(np.arange(problem.n)[:, None] - fixed[None, :]), axis=1)
+    s = np.clip(distance / max(width, 1), 0., 1.)
+    return s*s*(3 - 2*s)
+
+
+def smooth_free(problem, x, window):
+    """Savitzky-Golay smoothing that fades out toward the fixed frames."""
+    from scipy.signal import savgol_filter
+    smoothed = savgol_filter(x, window, 2, axis=0)
+    weight = fixed_frame_taper(problem, window)
+    result = x.copy()
+    result[problem.free] += weight[problem.free, None] * (smoothed - x)[problem.free]
+    return result
+
+
 def stance_offset(problem, positions, check_time):
-    """Fit a C2 base correction to nearby support phases, including seated support.
+    """Fit a smooth vertical base correction to nearby support phases, including seated support.
 
     Bounding-sphere clearance bounds are safe for collision culling but cannot
     measure a ground-alignment offset. Use exact distances here, and a coarse
     spline so switching the nearest shape cannot inject framewise acceleration.
-    This only initializes the trajectory; contacts still use the usual 1 mm gap.
+    Fixed frames keep a zero offset; a hovering fixed pose is joined to the
+    supported fit by a ballistic fall or rise. This only initializes the
+    trajectory; contacts still use the usual 1 mm gap.
     """
     from scipy.interpolate import BSpline
     from scipy.ndimage import median_filter
-    from scipy.linalg import null_space
 
     distances, normals = [], []
     for position in positions:
@@ -259,19 +284,29 @@ def stance_offset(problem, positions, check_time):
 
     times = np.arange(problem.n) * problem.dt
     degree = min(3, problem.n-1)
-    # Put knots on trajectory nodes so adding these positions and analytic
-    # velocities reproduces the same spline under Hermite reconstruction.
     stride = max(degree, round(.3 / problem.dt))
     knots = np.r_[np.repeat(times[0], degree+1), times[stride:-1:stride],
                    np.repeat(times[-1], degree+1)]
     spline = BSpline(knots, np.eye(len(knots)-degree-1), degree)
     basis = spline(times)
+    offset = basis @ np.linalg.lstsq(basis, targets, rcond=None)[0]
     fixed = np.setdiff1d(np.arange(problem.n), problem.free)
-    # Fit in the null space so fixed poses remain exactly unchanged without
-    # multiplying the correction by a frame mask that would break continuity.
-    free_basis = null_space(basis[fixed]) if len(fixed) else np.eye(basis.shape[1])
-    coefficients = free_basis @ np.linalg.lstsq(basis @ free_basis, targets, rcond=None)[0]
-    return basis @ coefficients, spline(times, nu=1) @ coefficients
+    # A fixed pose cannot move. Where the fit would lift one, fade the lift
+    # out smoothly toward it.
+    lift = fixed[offset[fixed] > 0]
+    if len(lift):
+        width = stride
+        for frame in lift:
+            s = np.clip(np.abs(np.arange(problem.n) - frame) / width, 0., 1.)
+            offset -= offset[frame] * (1 - s*s*(3 - 2*s))
+    # Where the fit would lower a fixed pose, that pose hovers and the body is
+    # airborne there: it falls ballistically from the pose (or rises into it)
+    # until it meets the supported fit, as a drop or a hop would.
+    gravity = abs(float(problem.robot.model.gravity.linear[2])) or 9.81
+    for frame in fixed[offset[fixed] < 0]:
+        offset = np.maximum(offset, -.5*gravity*(times - times[frame])**2)
+    offset[fixed] = 0.
+    return offset
 
 
 def _spline_correction(problem, targets, seconds=.3):
@@ -405,11 +440,26 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     def score(errors):
         return max(errors[name] / problem.robot.tolerances[name] for name in errors)
 
+    # Tolerances decide feasibility, but they are far too uneven (1e-4 Nm of
+    # effort against 0.1% body weight of base force) to choose which failed
+    # candidate is least wrong. Rank failures against physical scales instead.
+    finite_effort = problem.robot.effort[np.isfinite(problem.robot.effort) & (problem.robot.effort > 0)]
+    scales = {'dynamics': problem.robot.tolerances['dynamics'] / 1e-3,
+              'effort': float(np.median(finite_effort)) if len(finite_effort) else 1.,
+              'clearance': 10*CONTACT_MARGIN, 'position': .1, 'velocity': 1., 'orientation': .1}
+
+    def rank(errors):
+        return max(errors[name] / scales[name] for name in errors)
+
     def remember(variables):
         nonlocal best
         candidate = score(objective.errors)
-        if best is None or candidate < best[0]:
-            best = candidate, variables.copy(), dict(objective.errors)
+        if candidate <= 1:
+            ranked = -1.
+        else:
+            ranked = rank(objective.errors)
+        if best is None or ranked < best[0]:
+            best = ranked, variables.copy(), dict(objective.errors)
         return candidate
 
     try:
@@ -420,14 +470,12 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         # Smoothing first gives the local search a lower-acceleration starting
         # point without changing the reference or any fixed frame. Ground alignment
         # then runs on that smoothed path, so smoothing cannot undo the contacts.
-        from scipy.signal import savgol_filter
         window = int(os.environ.get('TRAJECTORY_OPTIMIZE_SMOOTH', 21))
         window = min(window, problem.n if problem.n % 2 else problem.n - 1)
         if window >= 5:
-            smoothed = savgol_filter(x, window, 2, axis=0)
-            x[problem.free] = smoothed[problem.free]
+            x = smooth_free(problem, x, window)
         x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-        offsets, _ = stance_offset(problem, x, objective.check_time)
+        offsets = stance_offset(problem, x, objective.check_time)
         x[problem.free, 2] += offsets[problem.free]
         variables = problem.consistent(x)
         x, v = problem.unpack(variables)
@@ -534,16 +582,17 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     # the same live 1 mm contact inference as the final validator, then apply
     # only time-continuous corrections: a smooth base lift fitted to the
     # measured penetration depth and whole-trajectory low-pass projections.
-    search = best[1].copy()
+    search, search_errors = best[1].copy(), dict(best[2])
     remaining = deadline - perf_counter()
     validation_reserve = min(8., max(3., .2 * remaining))
     restore_deadline = deadline - validation_reserve
     objective.deadline = restore_deadline
-    live_search_score = best[0]
     try:
+        # Rank every restoration candidate under the live model, starting
+        # with the search result itself.
+        best = None
         evaluate(search, gradient=False, live=True)
-        live_search_score = score(objective.errors)
-        best = live_search_score, search, dict(objective.errors)
+        remember(search)
         for window in (None, 31, 61, 91):
             if perf_counter() >= restore_deadline:
                 break
@@ -554,8 +603,7 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
                 if window < 5:
                     continue
                 x, _ = problem.unpack(best[1])
-                smoothed = savgol_filter(x, window, 2, axis=0)
-                x[problem.free] = smoothed[problem.free]
+                x = smooth_free(problem, x, window)
                 x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower,
                                              problem.robot.upper)
                 candidate = repair_penetration(problem, problem.consistent(x), restore_deadline)
@@ -566,12 +614,12 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     except TrajectoryOptimizeError as error:
         if 'time budget exhausted' not in str(error):
             raise
-    if best[0] < live_search_score or best[0] <= 1.:
+    if best is None:
+        best = 0., search, search_errors
+    if score(best[2]) <= 1.:
         return finish(best[1])
     if pool is not None:
         pool.terminate()
-    if best is None:
-        raise TrajectoryOptimizeError('Contact optimization failed before a candidate was available.')
     worst = max(best[2], key=lambda name: best[2][name]/problem.robot.tolerances[name])
     summary = ', '.join(f'{name} {best[2][name]:.6g}' for name in problem.robot.tolerances)
     return SimpleNamespace(x=best[1], nit=iterations, success=False,

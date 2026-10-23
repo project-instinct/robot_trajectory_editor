@@ -174,10 +174,13 @@ two interior Gauss points. Only free positions are decision variables: nodal
 velocities are always the finite differences (`np.gradient`) of the positions,
 in the search and in validation, because the saved NPZ stores positions only.
 Free positions are smoothed
-(Savitzky-Golay) before the solve. Ground alignment uses exact shape distances:
+(Savitzky-Golay) before the solve; the smoothing fades out toward fixed frames
+so it cannot put a kink next to them. Ground alignment uses exact shape distances:
 a 21-frame median window identifies nearby upward-facing support geometry,
 including seated/body support. A cubic spline with knots about 0.3 seconds apart
-fits the vertical base offset, with zero offset at fixed keyframes. This only initializes
+fits the vertical base offset. Fixed keyframes keep a zero offset: a lift is
+faded out toward them, and a fixed pose that hovers above the supported fit is
+joined to it by a ballistic fall (a drop state) or rise. This only initializes
 the search. The fixed schedule is inferred from that initial path; accepted
 outputs still require live contacts within 1 mm at validation samples.
 `TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and

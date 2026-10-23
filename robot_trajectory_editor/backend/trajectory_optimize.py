@@ -1044,7 +1044,10 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
         validation_error = None if largest_ratio <= 1 else f"Validation failed: {worst}."
     except TrajectoryOptimizeError as error:
         residuals, validation_error = {}, str(error)
-    error_message = " ".join(part for part in (solver_message, validation_error) if part)
+    # The independent validation is authoritative: a candidate the search
+    # gave up on still succeeds if it meets every tolerance.
+    error_message = (" ".join(part for part in (solver_message, validation_error) if part)
+                     if validation_error else "")
     result = {"trajectory": output, "residuals": residuals, "tolerances": robot.tolerances,
               "validation_samples_per_interval": 17, "iterations": int(getattr(result, "nit", 0)),
               "friction": friction, "max_effort_scale": max_effort_scale,
