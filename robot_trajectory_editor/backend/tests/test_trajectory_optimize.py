@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Problem, RobotModel, TrajectoryOptimizeError,
                                  frame_equations, initialize, optimize_trajectory, read_trajectory,
-                                 solve_normal_equations, validate_frame)
+                                 repair_glitches, smooth_target, solve_normal_equations, validate_frame)
 
 
 def motion(heights, rate=10., joints=None):
@@ -135,7 +135,7 @@ def test_fixed_keyframe_penetration_is_rejected(sphere_urdf):
 def test_stands_on_a_loaded_terrain_mesh(sphere_urdf):
     terrain = "v -5 -5 1\nv 5 -5 1\nv 5 5 1\nv -5 5 1\nf 1 2 3\nf 1 3 4\n"
     result = optimize_trajectory(motion([1.1005] + [1.12]*18 + [1.1005], rate=30.), [], sphere_urdf,
-                                 terrain_obj=terrain, friction=.7)
+                                 terrain_obj=terrain, friction=.7, smoothing_hz=0.)
     assert result["success"], result.get("error")
     heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
     assert np.all(heights - 1.1 <= CONTACT_MARGIN)
@@ -248,3 +248,47 @@ def test_block_solver_matches_dense_solve(sphere_urdf):
     model = sum(float(np.sum((r + B @ np.where(np.r_[False, problem.free, False][k:k+3, None], padded[k:k+3], 0.)
                                 .ravel())**2)) for k, (r, B, _) in enumerate(terms))
     assert evaluation.predicted(step) == pytest.approx(model, rel=1e-10)
+
+
+def test_glitch_repair_interpolates_joint_jumps_but_keeps_fixed_frames(articulated_urdf):
+    robot = RobotModel(articulated_urdf, ["hinge"], None, lambda _: None)
+    clean = np.linspace(0., .2, 60)[:, None]  # 0.34 rad/s at 100 fps; the limit is 5 rad/s
+    joints = clean.copy()
+    joints[12] += 1.3   # a one-frame spike
+    joints[40:] += .3   # a step
+    joints[50] -= 1.    # a spike on a fixed frame stays
+    repaired, count = repair_glitches(robot, joints, [0, 50, 59], 100., 1.)
+    assert count > 0
+    assert repaired[50, 0] == joints[50, 0]
+    np.testing.assert_allclose(repaired[:10], clean[:10], atol=1e-12)
+    assert abs(repaired[12, 0] - clean[12, 0]) < .01
+    speeds = np.abs(np.diff(repaired[:46, 0])) * 100
+    assert np.all(speeds <= 5. + 1e-9)
+    unchanged, none = repair_glitches(robot, joints, [], 100., 0.)
+    assert none == 0
+    np.testing.assert_array_equal(unchanged, joints)
+
+
+def test_smoothed_target_removes_jitter_and_keeps_fixed_frames_exact(articulated_urdf):
+    robot = RobotModel(articulated_urdf, ["hinge"], None, lambda _: None)
+    rng = np.random.default_rng(2)
+    n, rate = 120, 90.
+    t = np.arange(n) / rate
+    smooth = .5 * np.sin(2 * np.pi * t)
+    noisy = smooth + rng.normal(scale=.02, size=n)
+    reference = np.array([robot.configuration([0., 0., 1. + .01 * rng.normal()], [1., 0., 0., 0.], [x])
+                          for x in noisy])
+    target, _ = smooth_target(robot, reference, [0, 60, n - 1], rate, 6., 0.)
+    for frame in (0, 60, n - 1):
+        np.testing.assert_array_equal(target[frame], reference[frame])
+    joints = target[:, robot.joint_q][:, 0]
+    interior = np.r_[10:50, 70:110]
+    assert np.std(joints[interior] - smooth[interior]) < .3 * np.std(noisy[interior] - smooth[interior])
+    unchanged, _ = smooth_target(robot, reference, [0, n - 1], rate, 0., 0.)
+    np.testing.assert_array_equal(unchanged, reference)
+
+
+@pytest.mark.parametrize("option", ["smoothing_hz", "glitch_speed_scale"])
+def test_target_options_are_validated(sphere_urdf, option):
+    with pytest.raises(TrajectoryOptimizeError, match=option):
+        optimize_trajectory(motion(ballistic(3)), [], sphere_urdf, **{option: -1.})

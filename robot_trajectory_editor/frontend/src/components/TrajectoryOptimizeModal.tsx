@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS } from '../api/client'
 import { runTrajectoryOptimize } from '../state/trajectoryOptimize'
 import { useStore } from '../state/store'
 
@@ -14,29 +15,36 @@ function residualsText(result: { residuals?: Record<string, number>; tolerances?
 }
 
 export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
-  const [friction, setFriction] = useState(0.7)
-  const [maxEffortScale, setMaxEffortScale] = useState(1)
+  const [friction, setFriction] = useState(DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS.friction)
+  const [maxEffortScale, setMaxEffortScale] = useState(DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS.maxEffortScale)
+  const [smoothingHz, setSmoothingHz] = useState(DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS.smoothingHz)
+  const [glitchSpeedScale, setGlitchSpeedScale] = useState(DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS.glitchSpeedScale)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [result, setResult] = useState<Awaited<ReturnType<typeof runTrajectoryOptimize>> | null>(null)
 
   const previewing = result?.preview === true
   const validInputs = Number.isFinite(friction) && friction >= 0 &&
-    Number.isFinite(maxEffortScale) && maxEffortScale >= 1
+    Number.isFinite(maxEffortScale) && maxEffortScale >= 1 &&
+    Number.isFinite(smoothingHz) && smoothingHz >= 0 &&
+    Number.isFinite(glitchSpeedScale) && glitchSpeedScale >= 0
 
   const run = async () => {
     setBusy(true)
     setResult(null)
     setMessage('Optimizing the entire trajectory…')
     try {
-      const outcome = await runTrajectoryOptimize(urdfPath, () => true, friction, maxEffortScale)
+      const outcome = await runTrajectoryOptimize(urdfPath, () => true,
+        { friction, maxEffortScale, smoothingHz, glitchSpeedScale })
       setResult(outcome)
+      const repaired = outcome.repaired_joint_samples
+        ? ` Repaired ${outcome.repaired_joint_samples} glitched joint samples in the target.` : ''
       if (outcome.success === false) {
         const details = residualsText(outcome)
-        setMessage(`${outcome.error ?? 'Trajectory optimization failed.'}${details ? ` Residuals: ${details}` : ''}`)
+        setMessage(`${outcome.error ?? 'Trajectory optimization failed.'}${repaired}${details ? ` Residuals: ${details}` : ''}`)
       } else {
-        setMessage(`Trajectory optimization complete. Validated ${outcome.validation_samples_per_interval} samples per interval. ` +
-          residualsText(outcome))
+        setMessage(`Trajectory optimization complete. Validated ${outcome.validation_samples_per_interval} samples per interval.` +
+          `${repaired} ${residualsText(outcome)}`)
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -75,6 +83,26 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
             value={friction} disabled={busy}
             onChange={event => setFriction(event.target.valueAsNumber)} />
         </label>
+        <label style={labelStyle}>
+          Target smoothing (Hz)
+          <input aria-label="Target smoothing cutoff" type="number" min="0" step="1"
+            value={smoothingHz} disabled={busy}
+            onChange={event => setSmoothingHz(event.target.valueAsNumber)} />
+        </label>
+        <div style={hintStyle}>
+          Low-pass cutoff of the motion the optimizer stays close to. Lower is smoother; 0 keeps every
+          frame's detail, including jitter.
+        </div>
+        <label style={labelStyle}>
+          Glitch speed threshold (× URDF limit)
+          <input aria-label="Glitch speed threshold" type="number" min="0" step="0.5"
+            value={glitchSpeedScale} disabled={busy}
+            onChange={event => setGlitchSpeedScale(event.target.valueAsNumber)} />
+        </label>
+        <div style={hintStyle}>
+          Joint jumps faster than this multiple of the URDF velocity limit are interpolated away before
+          optimizing; 0 disables. Keyframes are never changed.
+        </div>
         <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
           {!result && (
             <button disabled={busy || !validInputs} onClick={run}>

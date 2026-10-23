@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
-import { optimizeTrajectory } from '../api/client'
+import { DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS, optimizeTrajectory } from '../api/client'
 import { runTrajectoryOptimize } from '../state/trajectoryOptimize'
 import { Trajectory } from '../state/Trajectory'
 import { useStore } from '../state/store'
 import { getViewport } from '../three/viewportContext'
 
-vi.mock('../api/client', () => ({ optimizeTrajectory: vi.fn() }))
+vi.mock('../api/client', async importOriginal => ({
+  ...await importOriginal<typeof import('../api/client')>(), optimizeTrajectory: vi.fn(),
+}))
 vi.mock('../three/viewportContext', () => ({ getViewport: vi.fn() }))
 
 const api = vi.mocked(optimizeTrajectory)
@@ -35,18 +37,18 @@ beforeEach(() => {
 })
 
 describe('Trajectory Optimize', () => {
-  it('submits the configured terrain friction', async () => {
+  it('submits the configured parameters', async () => {
     api.mockResolvedValue(response())
-    await runTrajectoryOptimize('robot.urdf', () => true, 0.5, 1.25)
-    expect(api.mock.calls[0][4]).toBe(0.5)
-    expect(api.mock.calls[0][5]).toBe(1.25)
+    const options = { friction: 0.5, maxEffortScale: 1.25, smoothingHz: 4, glitchSpeedScale: 2 }
+    await runTrajectoryOptimize('robot.urdf', () => true, options)
+    expect(api.mock.calls[0][4]).toEqual(options)
   })
 
   it('submits all frames and anchors, applies once, preserves cursor and supports undo', async () => {
     const before = useStore.getState().trajectory.clone()
     api.mockResolvedValue(response())
     await runTrajectoryOptimize('robot.urdf')
-    expect(api).toHaveBeenCalledWith(before.toJSON(), [1], null, 'robot.urdf', 0.7, 1)
+    expect(api).toHaveBeenCalledWith(before.toJSON(), [1], null, 'robot.urdf', DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS)
     const after = useStore.getState()
     expect(after.trajectory.basePoseW[2]).toBe(3)
     expect(after.trajectory.basePoseW[8]).toBe(4)

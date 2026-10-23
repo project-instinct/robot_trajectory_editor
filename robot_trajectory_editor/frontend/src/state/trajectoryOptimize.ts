@@ -1,4 +1,4 @@
-import { optimizeTrajectory } from '../api/client'
+import { DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS, optimizeTrajectory, type TrajectoryOptimizeOptions } from '../api/client'
 import { getViewport } from '../three/viewportContext'
 import { exportTerrainObj } from '../three/Terrain'
 import { Trajectory } from './Trajectory'
@@ -6,7 +6,7 @@ import { useStore } from './store'
 
 /** Apply only a validated result for the exact trajectory and scene submitted. */
 export async function runTrajectoryOptimize(urdfPath?: string, isCurrentRobot = () => true,
-                                           friction = 0.7, maxEffortScale = 1.0) {
+                                           options: TrajectoryOptimizeOptions = DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS) {
   const store = useStore.getState()
   const viewport = getViewport()
   if (!viewport?.robotModel || !store.robotModelLoaded) throw new Error('Load a robot before Trajectory Optimize.')
@@ -17,7 +17,7 @@ export async function runTrajectoryOptimize(urdfPath?: string, isCurrentRobot = 
   const terrain = () => viewport.terrainGroup.children.length ? exportTerrainObj(viewport.terrainGroup) : null
   const terrainObj = terrain()
   store.setIsPlaying(false)
-  const result = await optimizeTrajectory(snapshot, keyframes, terrainObj, urdfPath, friction, maxEffortScale)
+  const result = await optimizeTrajectory(snapshot, keyframes, terrainObj, urdfPath, options)
   const current = useStore.getState()
   if (current.trajectory !== source || JSON.stringify(source.toJSON()) !== JSON.stringify(snapshot) ||
       JSON.stringify([...source.keyframes].sort((a, b) => a - b)) !== JSON.stringify(keyframes) ||

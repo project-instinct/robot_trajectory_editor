@@ -117,21 +117,41 @@ export interface TrajectoryOptimizeResult {
   iterations: number
   friction?: number
   max_effort_scale?: number
+  smoothing_hz?: number
+  glitch_speed_scale?: number
+  repaired_joint_samples?: number
   seconds?: number
   success?: boolean
   error?: string
 }
 
+/** User parameters of one Trajectory Optimize request. */
+export interface TrajectoryOptimizeOptions {
+  /** Terrain friction coefficient μ. */
+  friction: number
+  /** Multiplier on the URDF actuator effort limits (at least 1). */
+  maxEffortScale: number
+  /** Low-pass cutoff of the target motion in Hz; 0 keeps every frame's detail. */
+  smoothingHz: number
+  /** Joint jumps faster than this multiple of the URDF velocity limit are repaired; 0 disables. */
+  glitchSpeedScale: number
+}
+
+export const DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS: TrajectoryOptimizeOptions = {
+  friction: 0.7, maxEffortScale: 1, smoothingHz: 8, glitchSpeedScale: 1,
+}
+
 export async function optimizeTrajectory(
   trajectory: TrajectoryJSON, keyframes: number[], terrainObj: string | null,
-  urdfPath?: string, friction = 0.7, maxEffortScale = 1.0,
+  urdfPath?: string, options: TrajectoryOptimizeOptions = DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS,
 ): Promise<TrajectoryOptimizeResult> {
   const response = await fetch(`${BASE}/trajectory/optimize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       trajectory, keyframes, terrain_obj: terrainObj, urdf_path: urdfPath,
-      friction, max_effort_scale: maxEffortScale,
+      friction: options.friction, max_effort_scale: options.maxEffortScale,
+      smoothing_hz: options.smoothingHz, glitch_speed_scale: options.glitchSpeedScale,
     }),
   })
   const result = await response.json()

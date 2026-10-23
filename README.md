@@ -120,7 +120,7 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 selection. Every keyframe anchor fixes all joints and the full base pose exactly.
 Without anchors, the start and end frames are fixed boundary conditions and only the
 interior frames are eligible. Clicking the button opens the parameter dialog
-(`max_effort_scale`, terrain friction). A validated result updates the editor as one
+(`max_effort_scale`, terrain friction, target smoothing, glitch speed threshold). A validated result updates the editor as one
 undo step. A solver/validation failure returns the best candidate as a preview:
 **Keep** applies it as one undo step, **Dump** restores the original. Results are
 discarded if the trajectory or scene changes during the request.
@@ -146,6 +146,20 @@ default `0.7`). Joint position and velocity limits, valid base orientation and
 non-penetration of the loaded terrain (or the `z=0` ground) are enforced. This is a
 point-support model without a sticking/sliding law. A boundary frame has no
 dynamics constraint of its own, because its velocity is free.
+
+The solver stays close to a *target* prepared from the edited motion, so
+retargeting noise is not reproduced:
+
+- **Glitch speed threshold** (API field `glitch_speed_scale`, default `1`, `0`
+  disables): joint jumps faster than this multiple of the URDF velocity limit are
+  re-interpolated from the nearest good frames, over at most 0.25 s.
+- **Target smoothing** (API field `smoothing_hz`, default `8` Hz, `0` disables): a
+  zero-phase second-order Butterworth low-pass of base position, base orientation
+  and joints.
+
+Fixed frames keep their exact poses; the filter's offset at each fixed frame is
+blended back out over about one filter period. The response reports
+`repaired_joint_samples`.
 
 No contact labels are required. Support points are the lowest points of each
 collision primitive (a cylinder's end rims, a capsule's end spheres, a box's
@@ -180,7 +194,8 @@ are small. The stages are:
    stays close to the edited poses and one that stays close to its accelerations.
    The latter stops the solver from shaking a limb at the frame rate to manufacture
    momentum, which central differences cannot see. The data terms are relaxed in
-   stages whenever progress stalls, and dropped in the last stage.
+   stages whenever progress stalls; the acceleration term keeps a small weight in
+   the last stage for the same reason.
 
 The support forces are re-allocated at every evaluation by a bounded least-squares
 problem with the joint torques (solved exactly by an active set over saturated
@@ -229,6 +244,17 @@ python scripts/audit_feasibility.py motion.npz robot.urdf --terrain terrain.stl
 ```
 
 Measured on the development machine (14 cores), μ = 0.7, 45 s budget:
+
+Nokov `diveroll4` (`20251106_diveroll4_simpleLab_noWall`, flat ground, endpoints
+fixed, 751 frames): the reference jitters by 0.83° RMS (high-pass, max 41°, a 1.3
+rad one-frame wrist jump at frame 444). With the defaults the result jitters by
+0.10° RMS (max 4°), 62 joint samples are repaired, and no velocity violation
+remains; with smoothing and glitch repair off the result keeps the reference's
+0.76° jitter. It still fails validation: in the roll (frames 262-453) the
+reference hovers about 9 mm above the ground with no collision geometry in contact,
+which needs 4.5 kN of missing support; 180 s reduces that to 457 N.
+
+Earlier measurements (before target smoothing):
 
 | Motion | Frames | Result |
 |---|---:|---|

@@ -68,6 +68,10 @@ DATA_SCALE = {"base_position": 1e-2, "base_rotation": 2e-2, "joint": 2e-2}
 # frame rate to manufacture momentum. It is relaxed less than the pose term.
 ACCELERATION_SCALE = 20.
 ACCELERATION_WEIGHT_FLOOR = 1e-2
+# Target preparation defaults (user parameters): low-pass cutoff of the target
+# and the joint speed, as a multiple of the URDF limit, that marks a glitch.
+DEFAULT_SMOOTHING_HZ = 8.
+DEFAULT_GLITCH_SPEED_SCALE = 1.
 
 
 def read_trajectory(payload, keyframes):
@@ -902,9 +906,10 @@ def optimize(problem, Q, evaluator, stop, validate):
         validated["result"] = validate(X)
         return validated["result"][1] is None
 
-    # The last stage drops the acceleration term too, so nothing competes
-    # with the constraints but the damping.
-    for weight, acceleration in ((1., None), (1e-2, None), (1e-4, None), (1e-8, 1e-8)):
+    # The last stage nearly drops the pose term. The acceleration term keeps a
+    # small weight: without it the solver trades base-force error for
+    # frame-rate shaking of the limbs.
+    for weight, acceleration in ((1., None), (1e-2, None), (1e-4, None), (1e-8, 1e-4)):
         Q, steps, done = levenberg_marquardt(
             problem, Q, lambda X: evaluator.evaluate(X, True, weight, True, acceleration), stop, accept,
             patience=3 if acceleration is None else 10)
@@ -1067,6 +1072,107 @@ def initialize(problem):
     return Q
 
 
+def repair_glitches(robot, joints, fixed, rate, speed_scale, longest=.25):
+    """Replace joint samples around frame-to-frame jumps by interpolation.
+
+    A jump is an interval whose joint speed exceeds `speed_scale` times the
+    URDF velocity limit. Its free frames are re-interpolated from the nearest
+    good frames, and a span that still contains a jump grows by a frame on
+    each side, up to `longest` seconds. Fixed frames are never changed.
+    Returns the repaired joints (frames x joints) and how many samples changed.
+    """
+    joints = joints.copy()
+    if speed_scale <= 0:
+        return joints, 0
+    n = len(joints)
+    limit = speed_scale * robot.velocity
+    is_fixed = np.zeros(n, dtype=bool)
+    is_fixed[fixed] = True
+    frames = np.arange(n)
+    longest = max(3, round(longest * rate))
+    repaired = 0
+    for joint in np.flatnonzero(np.isfinite(limit)):
+        original = joints[:, joint].copy()
+        bad = np.zeros(n, dtype=bool)
+        values = original
+        for _ in range(longest):
+            jumps = np.flatnonzero(np.abs(np.diff(values)) * rate > limit[joint])
+            if not len(jumps):
+                break
+            grown = bad.copy()
+            grown[jumps] = grown[jumps + 1] = True
+            for i in jumps:
+                if bad[i] or bad[i + 1]:
+                    # Still too fast inside a repaired span: widen it.
+                    start = i if bad[i] else i + 1
+                    while start > 0 and bad[start - 1]:
+                        start -= 1
+                    end = start
+                    while end < n - 1 and bad[end + 1]:
+                        end += 1
+                    if end - start + 1 < longest:
+                        grown[max(start - 1, 0)] = grown[min(end + 1, n - 1)] = True
+            grown &= ~is_fixed
+            if np.array_equal(grown, bad) or grown.all():
+                break
+            bad = grown
+            values = original.copy()
+            values[bad] = np.interp(frames[bad], frames[~bad], original[~bad])
+        joints[:, joint] = values
+        repaired += int(bad.sum())
+    return joints, repaired
+
+
+def smooth_target(robot, reference, fixed, rate, smoothing_hz, glitch_speed_scale):
+    """The trajectory the solver stays close to.
+
+    Joint glitches are repaired first, then base position, base orientation
+    and joints are low-pass filtered without phase lag. Fixed frames keep
+    their exact poses: the filter's offset at each fixed frame is blended
+    back out over its neighbours, without a kink. Returns the target
+    configurations and the number of repaired joint samples.
+    """
+    from scipy.signal import butter, filtfilt
+    pin, model = robot.pin, robot.model
+    n = len(reference)
+    target = reference.copy()
+    repaired = 0
+    if glitch_speed_scale > 0:
+        joints, repaired = repair_glitches(robot, target[:, robot.joint_q], fixed, rate, glitch_speed_scale)
+        target[:, robot.joint_q] = joints
+    if 0 < smoothing_hz < rate / 2 and n > 6:
+        b, a = butter(2, smoothing_hz / (rate / 2))
+        pad = min(3 * max(len(a), len(b)), n - 1)
+        quats = target[:, 3:7].copy()
+        for k in range(1, n):
+            if quats[k] @ quats[k-1] < 0:
+                quats[k] *= -1
+        target[:, :3] = filtfilt(b, a, target[:, :3], axis=0, padlen=pad)
+        quats = filtfilt(b, a, quats, axis=0, padlen=pad)
+        target[:, 3:7] = quats / np.linalg.norm(quats, axis=1, keepdims=True)
+        target[:, robot.joint_q] = filtfilt(b, a, target[:, robot.joint_q], axis=0, padlen=pad)
+    fixed = sorted(fixed)
+    if len(fixed) and not np.array_equal(target[fixed], reference[fixed]):
+        # Offset needed at each fixed frame, faded out toward the
+        # neighbouring fixed frames (or over about one filter period).
+        width = max(1, round(rate / smoothing_hz)) if smoothing_hz > 0 else 1
+        offsets = {f: pin.difference(model, target[f], reference[f]) for f in fixed}
+        correction = np.zeros((n, model.nv))
+        bounds = [-np.inf, *fixed, np.inf]
+        for i, f in enumerate(fixed):
+            reach_before = min(width, f - bounds[i]) if np.isfinite(bounds[i]) else width
+            reach_after = min(width, bounds[i + 2] - f) if np.isfinite(bounds[i + 2]) else width
+            for k in range(max(0, f - reach_before), min(n, f + reach_after + 1)):
+                reach = reach_before if k < f else reach_after
+                s = 1 - abs(k - f) / max(reach, 1)
+                correction[k] += offsets[f] * s*s*(3 - 2*s)
+        for k in range(n):
+            if np.any(correction[k]):
+                target[k] = pin.integrate(model, target[k], correction[k])
+        target[fixed] = reference[fixed]
+    return target, repaired
+
+
 def _build_output(payload, robot, Q, fixed):
     output = copy.deepcopy(payload)
     positions, quats, joints = zip(*(robot.pose(q) for q in Q))
@@ -1083,10 +1189,21 @@ def _build_output(payload, robot, Q, fixed):
 
 
 def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve_mesh=lambda _: None,
-                        friction=None, time_budget=45., max_effort_scale=1.0):
+                        friction=None, time_budget=45., max_effort_scale=1.0,
+                        smoothing_hz=DEFAULT_SMOOTHING_HZ, glitch_speed_scale=DEFAULT_GLITCH_SPEED_SCALE):
+    """Optimize the whole trajectory.
+
+    `smoothing_hz` is the low-pass cutoff of the target the solver stays
+    close to (0 keeps every frame's detail). `glitch_speed_scale` repairs
+    joint jumps faster than that multiple of the URDF velocity limit in the
+    target (0 disables). Fixed frames are never changed.
+    """
     started = perf_counter()
     if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
         raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
+    for name, value in (("smoothing_hz", smoothing_hz), ("glitch_speed_scale", glitch_speed_scale)):
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise TrajectoryOptimizeError(f"{name} must be a finite number at least 0.")
     names, rate, positions, joints, quats, fixed = read_trajectory(payload, keyframes)
     # With no tagged keyframes the trajectory endpoints are the boundary
     # conditions; only the interior frames are optimized.
@@ -1101,7 +1218,8 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
         clearance = float(np.min(robot.distances(reference[frame])[0]))
         if clearance < -TOLERANCES["clearance"]:
             raise TrajectoryOptimizeError(f"Fixed keyframe {frame} penetrates terrain by {-clearance:.6g} m.")
-    problem = Problem(robot, reference, fixed, 1 / rate)
+    target, repaired = smooth_target(robot, reference, fixed, rate, smoothing_hz, glitch_speed_scale)
+    problem = Problem(robot, target, fixed, 1 / rate)
     workers = int(os.environ.get("TRAJECTORY_OPTIMIZE_WORKERS", 0)) or max(1, min(12, (os.cpu_count() or 1) - 2))
     workers = min(workers, max(1, problem.n // 60))
     deadline = started + time_budget
@@ -1130,7 +1248,8 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
         blas.restore_original_limits()
     result = {"trajectory": output, "residuals": residuals, "tolerances": robot.tolerances,
               "validation_samples_per_interval": SUBSAMPLES, "iterations": iterations,
-              "friction": friction, "max_effort_scale": max_effort_scale,
+              "friction": friction, "max_effort_scale": max_effort_scale, "smoothing_hz": smoothing_hz,
+              "glitch_speed_scale": glitch_speed_scale, "repaired_joint_samples": repaired,
               "seconds": perf_counter() - started, "success": worst is None}
     if worst is not None:
         stopped = f" Optimizer stopped: {reason}." if reason else ""

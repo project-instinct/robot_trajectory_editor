@@ -67,9 +67,10 @@ def test_trajectory_optimize_uses_requested_model_and_propagates_failure(tmp_pat
     first.write_text('first')
     selected.write_text('selected')
     monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', str(first))
-    def fail(trajectory, keyframes, path, terrain, resolver, friction, max_effort_scale=1.0):
+    def fail(trajectory, keyframes, path, terrain, resolver, friction, max_effort_scale=1.0, **options):
         assert friction == .7
         assert max_effort_scale == 1.0
+        assert options == {'smoothing_hz': 4, 'glitch_speed_scale': 0}
         assert path == str(selected)
         assert keyframes == [0, 2]
         assert terrain == 'edited mesh'
@@ -77,6 +78,7 @@ def test_trajectory_optimize_uses_requested_model_and_propagates_failure(tmp_pat
     monkeypatch.setattr(app_module, 'optimize_trajectory', fail)
     response = app.test_client().post('/api/trajectory/optimize', json={
         'trajectory': {}, 'keyframes': [0, 2], 'urdf_path': 'selected.urdf', 'terrain_obj': 'edited mesh',
+        'smoothing_hz': 4, 'glitch_speed_scale': 0,
     })
     assert response.status_code == 422
     assert '0.01 m' in response.get_json()['error']
