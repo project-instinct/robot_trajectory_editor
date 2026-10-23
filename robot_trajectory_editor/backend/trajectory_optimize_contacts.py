@@ -350,13 +350,39 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         workers = 6 if problem.robot.terrain_mesh is not None else max(1, min(16, (os.cpu_count() or 1) - 2))
     # Small regression fixtures gain nothing from worker startup.
     workers = min(workers, max(1, problem.n // 50))
-    objective.evaluate(initial, gradient=False, stop_on_violation=True)
+    # Leave room for the restoration and the independent final validation
+    # from the start, so a slow setup cannot consume the whole budget.
+    reserve = float(os.environ.get('TRAJECTORY_OPTIMIZE_RESTORE_RESERVE', 0) or 0.)
+    if reserve <= 0.:
+        reserve = min(20., max(8., .5 * (deadline - perf_counter())))
+    objective.deadline = deadline - reserve
+    pool = None
+    chunks = None
+    # The best candidate known so far; returned as a failed preview if the
+    # budget runs out before the search has scored anything.
+    variables = initial
+
+    def setup_timeout():
+        if pool is not None:
+            pool.terminate()
+        problem.robot.contact_geometry.clear()
+        problem.robot._contact_request.clear()
+        problem.robot._force_cache = None
+        problem._collisions.clear()
+        return SimpleNamespace(x=variables, nit=0, success=False,
+                               message='Trajectory Optimize time budget exhausted before the contact search '
+                                       'started; showing the smoothed, ground-aligned initial candidate.')
+
+    try:
+        objective.evaluate(initial, gradient=False, stop_on_violation=True)
+    except TrajectoryOptimizeError as error:
+        if 'time budget exhausted' not in str(error):
+            raise
+        return setup_timeout()
     if objective.feasible() or problem.position_size == 0:
         # With every frame fixed there is nothing to choose; the final
         # validation reports whether the given trajectory is feasible.
         return SimpleNamespace(x=initial, nit=0, success=True)
-    pool = None
-    chunks = None
 
     def evaluate(variables, gradient=True, live=False):
         if pool is None:
@@ -369,46 +395,7 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             finally:
                 objective.schedules = schedules
         return evaluate_parallel(objective, pool, chunks, variables, gradient, live)
-    x, _ = problem.unpack(initial)
-    # Project the initial guess into the joint limits so the search does not
-    # start from avoidable violations; fixed keyframes are never touched.
-    x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-    # Smoothing first gives the local search a lower-acceleration starting
-    # point without changing the reference or any fixed frame. Ground alignment
-    # then runs on that smoothed path, so smoothing cannot undo the contacts.
-    from scipy.signal import savgol_filter
-    window = int(os.environ.get('TRAJECTORY_OPTIMIZE_SMOOTH', 21))
-    window = min(window, problem.n if problem.n % 2 else problem.n - 1)
-    if window >= 5:
-        smoothed = savgol_filter(x, window, 2, axis=0)
-        x[problem.free] = smoothed[problem.free]
-    x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-    offsets, _ = stance_offset(problem, x, objective.check_time)
-    x[problem.free, 2] += offsets[problem.free]
-    variables = problem.consistent(x)
-    x, v = problem.unpack(variables)
-    # Infer the fixed search schedule from the smoothed, aligned reference
-    # once, at exactly the collocation fractions the objective samples. This
-    # is a search model only: final validation still requires live 1 mm
-    # contact inference, non-penetration, and the usual effort/dynamics bounds.
-    if os.environ.get('TRAJECTORY_OPTIMIZE_CONTACT_SCHEDULE', '1') != '0':
-        problem.robot.contact_geometry.clear()
-        problem.robot._contact_request.clear()
-        problem.robot._force_cache = None
-        problem._collisions.clear()
-        schedules = []
-        for frame in range(problem.n - 1):
-            for fraction in objective.fractions:
-                objective.check_time()
-                state = hermite(x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)
-                schedules.append(problem.robot.infer_contact_schedule(state[0]))
-        objective.schedules = schedules
-    # Fork only after the schedule exists: workers inherit the objective, and
-    # mutating it in the parent afterwards would not reach them.
-    _WORKER['objective'] = objective
-    _WORKER['schedules'] = objective.schedules
-    pool = evaluation_pool(workers)
-    chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
+
     # L-BFGS chooses free positions only; every candidate is expanded with
     # the velocities those positions imply, exactly as the validator does.
     tangent = problem.tangent
@@ -425,10 +412,55 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             best = candidate, variables.copy(), dict(objective.errors)
         return candidate
 
-    # The early raw-input probe stopped at its first violation. Score the
-    # smoothed candidate itself before comparing it with later iterates.
-    evaluate(variables, gradient=False)
-    remember(variables)
+    try:
+        x, _ = problem.unpack(initial)
+        # Project the initial guess into the joint limits so the search does not
+        # start from avoidable violations; fixed keyframes are never touched.
+        x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
+        # Smoothing first gives the local search a lower-acceleration starting
+        # point without changing the reference or any fixed frame. Ground alignment
+        # then runs on that smoothed path, so smoothing cannot undo the contacts.
+        from scipy.signal import savgol_filter
+        window = int(os.environ.get('TRAJECTORY_OPTIMIZE_SMOOTH', 21))
+        window = min(window, problem.n if problem.n % 2 else problem.n - 1)
+        if window >= 5:
+            smoothed = savgol_filter(x, window, 2, axis=0)
+            x[problem.free] = smoothed[problem.free]
+        x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
+        offsets, _ = stance_offset(problem, x, objective.check_time)
+        x[problem.free, 2] += offsets[problem.free]
+        variables = problem.consistent(x)
+        x, v = problem.unpack(variables)
+        # Infer the fixed search schedule from the smoothed, aligned reference
+        # once, at exactly the collocation fractions the objective samples. This
+        # is a search model only: final validation still requires live 1 mm
+        # contact inference, non-penetration, and the usual effort/dynamics bounds.
+        if os.environ.get('TRAJECTORY_OPTIMIZE_CONTACT_SCHEDULE', '1') != '0':
+            problem.robot.contact_geometry.clear()
+            problem.robot._contact_request.clear()
+            problem.robot._force_cache = None
+            problem._collisions.clear()
+            schedules = []
+            for frame in range(problem.n - 1):
+                for fraction in objective.fractions:
+                    objective.check_time()
+                    state = hermite(x[frame], x[frame+1], v[frame], v[frame+1], problem.dt, fraction)
+                    schedules.append(problem.robot.infer_contact_schedule(state[0]))
+            objective.schedules = schedules
+        # Fork only after the schedule exists: workers inherit the objective, and
+        # mutating it in the parent afterwards would not reach them.
+        _WORKER['objective'] = objective
+        _WORKER['schedules'] = objective.schedules
+        pool = evaluation_pool(workers)
+        chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
+        # The early raw-input probe stopped at its first violation. Score the
+        # smoothed candidate itself before comparing it with later iterates.
+        evaluate(variables, gradient=False)
+        remember(variables)
+    except TrajectoryOptimizeError as error:
+        if 'time budget exhausted' not in str(error):
+            raise
+        return setup_timeout()
     force_scale = problem.robot.tolerances['dynamics'] / 1e-3
 
     def run_stage(maximum):
@@ -462,14 +494,8 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         problem._collisions.clear()
         return SimpleNamespace(x=variables, nit=iterations, success=True)
 
-    # Leave room for the restoration and the independent final validation.
-    # A timeout during the search is a normal stopping condition now; the
+    # A timeout during the search is a normal stopping condition; the
     # remembered candidate is still repaired below.
-    remaining = deadline - perf_counter()
-    reserve = float(os.environ.get('TRAJECTORY_OPTIMIZE_RESTORE_RESERVE', 0) or 0.)
-    if reserve <= 0.:
-        reserve = min(20., max(8., .5 * remaining))
-    objective.deadline = deadline - reserve
     try:
         if solver == 'augmented':
             rho, previous = 1e3, np.inf

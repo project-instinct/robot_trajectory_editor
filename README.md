@@ -154,8 +154,12 @@ non-penetration tolerance. Each contact uses a unilateral force and a four-ray
 pyramid inside the Coulomb friction cone. Set
 `TRAJECTORY_OPTIMIZE_CONTACT_SCHEDULE=0` to restore live 1 mm contact inference
 during the search.
-OSQP distributes these forces together with bounded joint torques to explain
-inverse dynamics. The remaining floating-base force must vanish, and joint
+A bounded least-squares allocation distributes these forces together with
+bounded joint torques to explain inverse dynamics. It is solved exactly by
+guessing the set of saturated actuators: unsaturated joints absorb their rows,
+leaving a small NNLS problem over the base and saturated-joint rows, and the set
+is updated until it is self-consistent. OSQP, then BVLS, solve the same problem
+when the set does not settle. The remaining floating-base force must vanish, and joint
 torques must satisfy the available URDF effort limits. Geometry penetration is
 allowed only during the search; output must pass non-penetration validation.
 This is a point-support model: it does not impose a sticking/sliding schedule,
@@ -182,7 +186,10 @@ worker processes (`TRAJECTORY_OPTIMIZE_WORKERS`, default 6 with a loaded terrain
 16 on flat ground) because independent interval blocks dominate the runtime.
 The solver and penalties guide the search; they do not relax the acceptance
 tolerances.
-The search reserves part of the budget for feasibility restoration. Restoration
+The search reserves part of the budget, from the start of the request, for
+feasibility restoration and validation. If the budget runs out before the
+search starts, the smoothed, ground-aligned initial candidate is returned as a
+failed preview. Restoration
 scores candidates with the live 1 mm contact model used by validation, fits a
 C2 B-spline base lift to the measured penetration depth, and tries
 whole-trajectory low-pass projections that reduce the joint accelerations
@@ -193,7 +200,8 @@ The pool uses `fork` so workers inherit the loaded model and terrain; set
 `TRAJECTORY_OPTIMIZE_WORKERS=1` to force serial evaluation. Trajectory Optimize has a 45-second
 computation budget, checked between samples. A check
 or model setup already in progress can slightly overrun that budget. A timeout
-is a failure and never applies a partial result. This budget is **not a claim of
+is a failure: its best candidate is only a preview and is never applied without
+**Keep**. This budget is **not a claim of
 successful trajectory optimization within 45 seconds**; see the measured limitations below.
 
 The model must provide inertial data for physical bodies and collision geometry,
@@ -285,6 +293,7 @@ Solver runs with the 45-second budget, μ = 0.7:
 | Nokov `jumpsit2`, 750 of 967 frames, 50 cm boxes | 90 fps | 45.03 s timeout. Initial dynamics 787 N, effort 403 Nm. Near the budget: dynamics 406 N, effort 264 Nm, clearance 8 mm, velocity 0. No result applied |
 | Nokov `rollVault11`, 750 of 942 frames, 50 cm boxes | 90 fps | 45.03 s timeout. Initial dynamics 404 N, effort 87 Nm. Near the budget: dynamics 434 N, effort 238 Nm, clearance 2 mm. No result applied |
 | Kengo `vault_0068`, 750 of 1310 frames, flat ground | 90 fps | Optimizer terminated on stage iteration limits after 27.5 s; best base-dynamics residual 295 N (tolerance 0.41 N). No result applied |
+| Nokov `highClimbRight1`, all 1199 frames, 50 cm boxes | 90 fps | Failed preview after 44 s (one parallel evaluation 2.6 s). Standing on the box, the reference is 22–48 mm above the box top; the preview is within ±4 mm. Best residuals: dynamics 820 N, effort 610 Nm, clearance 23 mm (pre-climb feet are in the floor in the reference); a foot still intersects the terrain near frame 88. A 180 s budget reaches dynamics 925 N, effort 272 Nm |
 
 Acceptance tolerances are 0.1% of body weight for dynamics (0.33–0.41 N here),
 `1e-4` Nm for effort, `1e-5` m for penetration, and `1e-6` for velocity. The

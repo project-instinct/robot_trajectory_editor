@@ -59,6 +59,15 @@ def test_multiple_contacts_balance_moment(monkeypatch):
         # A cold-started QP is independent of the preceding contact allocation.
         for result, baseline in zip((*actual, solver.coefficients), expected):
             np.testing.assert_allclose(result, baseline, atol=1e-10, rtol=0)
+    # The general QP and its BVLS fallback serve allocations whose saturated
+    # actuator set does not settle.
+    monkeypatch.setattr(SupportForces, '_saturation_active_set', lambda self, *args: None)
+    for moment, expected in zip([-20., 20.], repeated):
+        residual, forces = solver.solve(np.array([0, 0, 100, 0, moment, 0]),
+                                        [point_map([-1, 0, 0]), point_map([1, 0, 0])],
+                                        [[0, 0, 1], [0, 0, 1]])
+        np.testing.assert_allclose(residual, expected[0], atol=1e-4)
+        np.testing.assert_allclose(forces, expected[1], atol=1e-4)
     assert len(solver.solvers) == 1
     monkeypatch.setattr('support.osqp.OSQP.solve',
                         lambda self, **kwargs: SimpleNamespace(
@@ -88,3 +97,29 @@ def test_friction_pyramid_is_inside_cone_for_sloped_normal():
         axial = force @ normal
         assert axial >= 0
         assert np.linalg.norm(force-axial*normal) <= .7*axial + 1e-12
+
+
+@pytest.mark.parametrize('effort', [50., 5., .5])
+def test_saturation_active_set_matches_general_qp(effort, monkeypatch):
+    # Random multi-contact allocations, from unsaturated to mostly saturated
+    # actuators, must give the same residual as the general bounded QP.
+    rng = np.random.default_rng(0)
+    joints = 4
+    fast = SupportForces(np.full(joints, effort), .7)
+    general = SupportForces(np.full(joints, effort), .7)
+    monkeypatch.setattr(general, '_saturation_active_set', lambda *args: None)
+    for _ in range(20):
+        maps = []
+        for _ in range(3):
+            mapping = point_map(rng.normal(size=3), joints=joints)
+            mapping[6:] = rng.normal(size=(joints, 3))
+            maps.append(mapping)
+        normals = [[0, 0, 1]] * 3
+        required = np.r_[rng.normal(size=6)*10 + [0, 0, 100, 0, 0, 0], rng.normal(size=joints)*20]
+        costs = rng.uniform(0, 1e-3, size=3)
+        residual, _ = fast.solve(required, maps, normals, costs)
+        expected, _ = general.solve(required, maps, normals, costs)
+        np.testing.assert_allclose(residual[:6], expected[:6], atol=1e-4)
+        torque, limit = residual[6:], fast.effort_limits
+        np.testing.assert_allclose(np.maximum(np.abs(torque) - limit, 0),
+                                   np.maximum(np.abs(expected[6:]) - limit, 0), atol=1e-4)

@@ -51,6 +51,40 @@ class SupportForces:
         self.solvers = {}
         self.coefficients = np.empty(0)
 
+    def _saturation_active_set(self, required, contacts, regularization, max_iter=30):
+        """Exact solve of the same allocation by guessing the saturated actuators.
+
+        An unsaturated joint torque absorbs its whole row, so only the base
+        rows and the rows of saturated joints (with their torque at the bound)
+        constrain the ray coefficients: a small NNLS problem. Joints are moved
+        in or out of the saturated set until the set is self-consistent, which
+        is the optimality condition of the convex allocation. Returns None if
+        the set does not settle; the caller then uses the general QP.
+        """
+        from scipy.optimize import nnls
+        limits = self.effort_limits
+        force_count = contacts.shape[1]
+        damping = np.diag(np.sqrt(regularization))
+        zeros = np.zeros(force_count)
+        saturated = np.zeros(len(limits), dtype=int)
+        for _ in range(max_iter):
+            joints = np.flatnonzero(saturated)
+            rows = np.r_[np.arange(6), 6 + joints]
+            target = required[rows].astype(float)
+            target[6:] -= saturated[joints] * limits[joints]
+            try:
+                coefficients = nnls(np.vstack([contacts[rows], damping]), np.r_[target, zeros],
+                                    maxiter=50*force_count)[0]
+            except RuntimeError:
+                return None
+            torque = required[6:] - contacts[6:] @ coefficients
+            update = np.where(torque > limits, 1, np.where(torque < -limits, -1, 0))
+            update = np.where(saturated != 0, np.where(saturated*torque >= limits, saturated, 0), update)
+            if np.array_equal(update, saturated):
+                return coefficients if np.isfinite(coefficients).all() else None
+            saturated = update
+        return None
+
     def solve(self, required, point_maps, normals, costs=None):
         """Return inverse dynamics minus physically admissible contact forces.
 
@@ -75,6 +109,11 @@ class SupportForces:
         regularization = np.full(count, 1e-10)
         if costs is not None:
             regularization[:force_count] += np.repeat(costs, 4)
+        coefficients = self._saturation_active_set(required, contacts, regularization[:force_count])
+        if coefficients is not None:
+            self.coefficients = coefficients.copy()
+            forces = np.array([ray @ coefficients[4*i:4*i+4] for i, ray in enumerate(rays)])
+            return required - contacts @ coefficients, forces
         hessian = matrix.T @ matrix
         hessian.flat[::count+1] += regularization
         # Explicit upper-triangular entries preserve the update pattern when a

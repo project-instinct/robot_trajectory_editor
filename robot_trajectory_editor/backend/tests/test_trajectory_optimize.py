@@ -619,3 +619,12 @@ def test_contact_optimization_grounds_hovering_interior(sphere_urdf):
     assert result["success"], result.get("error")
     heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
     assert np.all(heights < .1 + 1e-3)
+
+
+def test_budget_exhausted_before_search_still_returns_preview(sphere_urdf):
+    data = motion(30)
+    data["base_pos_w"] = [[0., 0., .1]] + [[0., 0., .13]] * 28 + [[0., 0., .1]]
+    result = optimize_trajectory(data, [], sphere_urdf, friction=.7, time_budget=1e-3)
+    assert result["success"] is False
+    assert "time budget exhausted" in result["error"]
+    assert len(result["trajectory"]["base_pos_w"]) == 30
