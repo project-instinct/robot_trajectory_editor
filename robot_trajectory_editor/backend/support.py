@@ -51,13 +51,14 @@ class SupportForces:
         self.solvers = {}
         self.coefficients = np.empty(0)
 
-    def solve(self, required, point_maps, normals):
+    def solve(self, required, point_maps, normals, costs=None):
         """Return inverse dynamics minus physically admissible contact forces.
 
         point_maps[k] maps a world force at contact k into generalized forces,
         ordered as the six base forces followed by trajectory joint order.
         Actuator bounds participate in force distribution, so support that
         requires excessive joint torque is not treated as dynamically feasible.
+        Optional per-contact costs make the allocation prefer some contacts.
         """
         required = np.asarray(required)
         if not len(point_maps):
@@ -71,7 +72,9 @@ class SupportForces:
         count = matrix.shape[1]
         lower = np.r_[np.zeros(force_count), -self.effort_limits]
         upper = np.r_[np.full(force_count, np.inf), self.effort_limits]
-        regularization = 1e-10
+        regularization = np.full(count, 1e-10)
+        if costs is not None:
+            regularization[:force_count] += np.repeat(costs, 4)
         hessian = matrix.T @ matrix
         hessian.flat[::count+1] += regularization
         # Explicit upper-triangular entries preserve the update pattern when a
@@ -100,7 +103,7 @@ class SupportForces:
             # least-squares problem instead of returning that unfinished QP.
             free = lower < upper
             fallback = lsq_linear(
-                np.vstack([matrix[:, free], np.sqrt(regularization)*np.eye(count)[:, free]]),
+                np.vstack([matrix[:, free], np.diag(np.sqrt(regularization))[:, free]]),
                 np.r_[required, np.zeros(count)], bounds=(lower[free], upper[free]),
                 method='bvls', tol=1e-10)
             if not fallback.success or not np.isfinite(fallback.x).all():

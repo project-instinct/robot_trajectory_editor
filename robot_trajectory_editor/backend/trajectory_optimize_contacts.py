@@ -12,7 +12,8 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.optimize import minimize
 
-from trajectory_optimize import CONTACT_MARGIN, GAUSS_POINTS, TrajectoryOptimizeError, hermite
+from trajectory_optimize import (CONTACT_MARGIN, GAUSS_POINTS, SEARCH_CLEARANCE, TrajectoryOptimizeError,
+                                 hermite)
 
 _WORKER = {}
 
@@ -82,11 +83,10 @@ class ContactObjective:
     def __init__(self, problem, deadline):
         self.problem, self.deadline = problem, deadline
         self.penalty = 1e3
-        # Without velocity curvature, a penalty step can move the free nodal
-        # velocities by orders of magnitude before the line search reacts.
-        # Keeping them near the reference finite differences conditions the
-        # search; the output positions remain governed by the same penalties.
-        self.velocity_weight = 1.
+        # Velocities are the finite differences of the positions. Tracking the
+        # reference ones, scaled to per-frame displacement, damps framewise
+        # zigzags without outweighing the position term.
+        self.velocity_weight = problem.dt**2
         self.velocity_reference = np.gradient(problem.reference, problem.dt, axis=0,
                                               edge_order=2 if problem.n > 2 else 1)
         self.errors = {}
@@ -142,11 +142,31 @@ class ContactObjective:
                 sample = frame*len(fractions) + sample_of[fraction]
                 schedule = self.schedules[sample] if self.schedules is not None else None
                 clearance, clearance_jac = problem.collision(q, penetration_only=True, schedule=schedule)
+                if schedule is not None:
+                    clearance = clearance - SEARCH_CLEARANCE
                 torque = (robot.forces(*state) if schedule is None
                           else robot.forces(*state, schedule=schedule))
                 if not np.isfinite(torque).all():
                     raise TrajectoryOptimizeError('Non-finite dynamics during Trajectory Optimize.')
                 margins = problem.margins(state, clearance, schedule)
+                # The validator only accepts support within CONTACT_MARGIN.
+                # A scheduled contact that carries load while hovering is a
+                # violation, weighted by the share of body weight it carries.
+                hovering = []
+                if schedule:
+                    entry = robot.contact_geometry[q.tobytes()]
+                    coefficients = robot._support_coefficients
+                    for contact, index in enumerate(entry[2]):
+                        load = float(np.sum(coefficients[4*contact:4*contact+4])) / force_scale
+                        if load <= 1e-6 or entry[4][contact] <= 0.:
+                            continue
+                        distance, distance_gradient = robot.geometry_distance(q, index)
+                        # Half the margin leaves room for the curve between
+                        # the search samples and the denser validation ones.
+                        hover = distance - .5*CONTACT_MARGIN
+                        if hover > 0.:
+                            hovering.append((load, hover, distance_gradient))
+                            self.errors['clearance'] = max(self.errors['clearance'], hover)
                 self.errors['dynamics'] = max(self.errors['dynamics'], float(np.max(np.abs(torque[:6]))))
                 for name, values in margins.items():
                     if np.isnan(values).any() or np.isneginf(values).any():
@@ -168,6 +188,9 @@ class ContactObjective:
                 penetration = np.minimum(clearance, 0.)
                 loss += self.penalty * (penetration @ penetration)
                 dq += 2*self.penalty*(penetration @ clearance_jac)
+                for load, hover, distance_gradient in hovering:
+                    loss += self.penalty * load * hover*hover
+                    dq += 2*self.penalty*load*hover*distance_gradient
                 chart = min(float(margins['orientation'][0]), 0.)
                 loss += self.penalty * chart*chart
                 dq[3:6] -= 2*self.penalty*chart*q[3:6]/(2*np.pi-.01)
@@ -311,10 +334,10 @@ def repair_penetration(problem, variables, deadline):
         lift = penetration_lift(problem, x, v, check_time)
         if not np.any(lift > 0.):
             break
-        offset, offset_velocity = _spline_correction(problem, lift)
+        offset, _ = _spline_correction(problem, lift)
         x[problem.free, 2] += offset[problem.free]
-        v[:, 2] += offset_velocity
-        variables = problem.pack(x, v)
+        variables = problem.consistent(x)
+        x, v = problem.unpack(variables)
     return variables
 
 
@@ -328,7 +351,9 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     # Small regression fixtures gain nothing from worker startup.
     workers = min(workers, max(1, problem.n // 50))
     objective.evaluate(initial, gradient=False, stop_on_violation=True)
-    if objective.feasible():
+    if objective.feasible() or problem.position_size == 0:
+        # With every frame fixed there is nothing to choose; the final
+        # validation reports whether the given trajectory is feasible.
         return SimpleNamespace(x=initial, nit=0, success=True)
     pool = None
     chunks = None
@@ -344,12 +369,10 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
             finally:
                 objective.schedules = schedules
         return evaluate_parallel(objective, pool, chunks, variables, gradient, live)
-    x, v = problem.unpack(initial)
-    # Joint limits apply to the nodal variables, which are independent of the
-    # reference positions. Project the initial guess so the search does not
+    x, _ = problem.unpack(initial)
+    # Project the initial guess into the joint limits so the search does not
     # start from avoidable violations; fixed keyframes are never touched.
     x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-    v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
     # Smoothing first gives the local search a lower-acceleration starting
     # point without changing the reference or any fixed frame. Ground alignment
     # then runs on that smoothed path, so smoothing cannot undo the contacts.
@@ -360,12 +383,10 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
         smoothed = savgol_filter(x, window, 2, axis=0)
         x[problem.free] = smoothed[problem.free]
     x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower, problem.robot.upper)
-    v = np.gradient(x, problem.dt, axis=0, edge_order=2 if problem.n > 2 else 1)
-    offsets, offset_velocity = stance_offset(problem, x, objective.check_time)
+    offsets, _ = stance_offset(problem, x, objective.check_time)
     x[problem.free, 2] += offsets[problem.free]
-    v[:, 2] += offset_velocity
-    v[:, 6:] = np.clip(v[:, 6:], -problem.robot.velocity, problem.robot.velocity)
-    variables = problem.pack(x, v)
+    variables = problem.consistent(x)
+    x, v = problem.unpack(variables)
     # Infer the fixed search schedule from the smoothed, aligned reference
     # once, at exactly the collocation fractions the objective samples. This
     # is a search model only: final validation still requires live 1 mm
@@ -388,7 +409,9 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
     _WORKER['schedules'] = objective.schedules
     pool = evaluation_pool(workers)
     chunks = np.array_split(np.arange(problem.n - 1), workers) if pool is not None else None
-    scale = np.r_[np.ones(problem.position_size), np.full(problem.n*problem.d, 1/problem.dt)]
+    # L-BFGS chooses free positions only; every candidate is expanded with
+    # the velocities those positions imply, exactly as the validator does.
+    tangent = problem.tangent
     iterations = 0
     best = None
 
@@ -410,21 +433,21 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
 
     def run_stage(maximum):
         nonlocal variables, iterations
-        def function(scaled):
-            candidate = scaled * scale
+        def function(positions):
+            candidate = problem.expand(positions)
             value, gradient = evaluate(candidate)
             if remember(candidate) <= 1:
                 raise _Feasible(candidate)
-            return value, gradient * scale
+            return value, tangent.T @ gradient
 
         try:
-            result = minimize(function, variables / scale, jac=True, method='L-BFGS-B',
+            result = minimize(function, variables[:problem.position_size], jac=True, method='L-BFGS-B',
                               options={'maxiter': maximum, 'maxls': 20,
                                        'ftol': 1e-12, 'gtol': 1e-7})
         except _Feasible as found:
             return found.variables
         iterations += result.nit
-        variables = result.x * scale
+        variables = problem.expand(result.x)
         evaluate(variables, gradient=False)
         if remember(variables) <= 1:
             return variables
@@ -504,13 +527,12 @@ def solve_contacts(problem, initial, deadline, workers=None, solver=None):
                 window = min(window, problem.n if problem.n % 2 else problem.n - 1)
                 if window < 5:
                     continue
-                x, v = problem.unpack(best[1])
+                x, _ = problem.unpack(best[1])
                 smoothed = savgol_filter(x, window, 2, axis=0)
                 x[problem.free] = smoothed[problem.free]
                 x[problem.free, 6:] = np.clip(x[problem.free, 6:], problem.robot.lower,
                                              problem.robot.upper)
-                v = np.gradient(x, problem.dt, axis=0, edge_order=2 if problem.n > 2 else 1)
-                candidate = repair_penetration(problem, problem.pack(x, v), restore_deadline)
+                candidate = repair_penetration(problem, problem.consistent(x), restore_deadline)
             evaluate(candidate, gradient=False, live=True)
             remember(candidate)
     except _Deadline:

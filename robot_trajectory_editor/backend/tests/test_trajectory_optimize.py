@@ -496,7 +496,11 @@ def test_stance_offset_leaves_distant_flight_unsupported(sphere_urdf):
     assert not robot.contact_geometry[reference[0].tobytes()][0]
 
 
-def test_support_envelope_gradient_matches_finite_difference(sphere_urdf):
+def test_support_envelope_gradient_matches_finite_difference(sphere_urdf, monkeypatch):
+    import trajectory_optimize
+    # The hover tie-break cost is outside the envelope argument; the search
+    # penalizes loaded hovering contacts directly instead.
+    monkeypatch.setattr(trajectory_optimize, 'HOVER_FORCE_COST', 0.)
     robot = RobotDynamics(sphere_urdf, [], None, lambda _: None, friction=.7)
 
     def check(state, schedule=None):
@@ -592,3 +596,26 @@ def test_contained_geometry_uses_outward_support_normal(sphere_urdf):
     normal = robot.contact_geometry[x.tobytes()][1][0]
     np.testing.assert_allclose(normal, derivative[0, :3], atol=1e-8)
     assert normal[2] > .99
+
+
+def test_fixed_hovering_pose_fails_validation(sphere_urdf):
+    # The saved trajectory has positions only. Free nodal velocities must not
+    # let a static pose 5 cm above the ground pass as dynamically consistent.
+    data = motion(4)
+    data["base_pos_w"] = [[0., 0., .15]] * 4
+    result = optimize_trajectory(data, [0, 1, 2, 3], sphere_urdf, friction=.7)
+    assert result["success"] is False
+    assert result["residuals"]["dynamics"] == pytest.approx(9.81)
+
+
+def test_contact_optimization_grounds_hovering_interior(sphere_urdf):
+    # Scheduled search contacts reach 5 cm, but validation only accepts 1 mm.
+    # The search must close the gap rather than lean on hovering support.
+    n = 30
+    data = motion(n)
+    data["framerate"] = 30.
+    data["base_pos_w"] = [[0., 0., .1]] + [[0., 0., .13]] * (n-2) + [[0., 0., .1]]
+    result = optimize_trajectory(data, [], sphere_urdf, friction=.7, time_budget=40)
+    assert result["success"], result.get("error")
+    heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
+    assert np.all(heights < .1 + 1e-3)

@@ -144,8 +144,11 @@ schedule: collision geometry within 5 cm of the terrain with an upward-facing
 normal supplies a contact, and its terrain contact point is stored in the link
 frame. During the solve that scheduled point and support mapping follow the link
 pose, so the support QP keeps the contact available even when the current surface
-gap exceeds 1 mm; its force may still be zero, which represents lift-off. This is
-a search model only. Final validation does not use the schedule: it infers live
+gap exceeds 1 mm; its force may still be zero, which represents lift-off. Force at
+a hovering scheduled contact carries a small QP cost, so closed contacts are
+preferred, and a scheduled contact that carries load while more than 0.5 mm above
+the terrain is penalized as a violation in proportion to its load. The search
+also keeps a 0.05 mm clearance at its samples. This is a search model only. Final validation does not use the schedule: it infers live
 contacts within the `1e-3` m margin and applies the unchanged `1e-5` m
 non-penetration tolerance. Each contact uses a unilateral force and a four-ray
 pyramid inside the Coulomb friction cone. Set
@@ -163,14 +166,14 @@ trajectory. An experimental augmented-Lagrangian path with per-sample multiplier
 for the base forces and actuator bounds is available with
 `TRAJECTORY_OPTIMIZE_SOLVER=augmented`; it improves some mean residuals but is not
 yet robust on every motion. Constraint samples are at both interval endpoints and
-two interior Gauss points. Free nodal velocities start from the reference finite
-differences clipped to the URDF velocity limits. Free positions are smoothed
+two interior Gauss points. Only free positions are decision variables: nodal
+velocities are always the finite differences (`np.gradient`) of the positions,
+in the search and in validation, because the saved NPZ stores positions only.
+Free positions are smoothed
 (Savitzky-Golay) before the solve. Ground alignment uses exact shape distances:
 a 21-frame median window identifies nearby upward-facing support geometry,
 including seated/body support. A cubic spline with knots about 0.3 seconds apart
-fits the vertical base offset, with zero offset at fixed keyframes. Knots lie on
-trajectory nodes and the spline's analytic velocities are added with its positions,
-so Hermite reconstruction preserves the smooth correction. This only initializes
+fits the vertical base offset, with zero offset at fixed keyframes. This only initializes
 the search. The fixed schedule is inferred from that initial path; accepted
 outputs still require live contacts within 1 mm at validation samples.
 `TRAJECTORY_OPTIMIZE_SMOOTH`, `TRAJECTORY_OPTIMIZE_OUTERS` and

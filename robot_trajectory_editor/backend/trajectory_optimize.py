@@ -3,13 +3,15 @@
 Cubic Hermite configurations are collocated at two Gauss points per interval.
 Joint torques are eliminated using inverse dynamics; the six unactuated base
 force residuals must vanish after support allocation. Keyframe configurations
-never enter the decision vector.
+never enter the decision vector, and nodal velocities are the finite
+differences of the positions rather than independent variables.
 """
 import copy
 import io
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -30,6 +32,12 @@ CONTACT_MARGIN = 1e-3
 # onto the terrain. It never relaxes the 1 mm live inference used by validation.
 CONTACT_SCHEDULE_PROXIMITY = 5e-2
 CONTACT_SCHEDULE_NORMAL_Z = .7
+# Support-QP cost of force at a scheduled contact hovering a full schedule
+# proximity above the terrain. It only breaks ties toward closed contacts.
+HOVER_FORCE_COST = 1e-3
+# The contact search keeps this clearance at its sparse samples so the curve
+# between them still clears the terrain at the denser validation samples.
+SEARCH_CLEARANCE = 5e-5
 
 
 def read_trajectory(payload, keyframes):
@@ -392,8 +400,10 @@ class RobotDynamics:
         if (geometry_key not in self.contact_geometry
                 or self._contact_request.get(geometry_key) != request):
             self.clearances(x, schedule=schedule)
-        mappings, normals = self.contact_geometry[geometry_key][:2]
-        adjusted, _ = self.support.solve(self.required_forces(x, xd, xdd), mappings, normals)
+        entry = self.contact_geometry[geometry_key]
+        mappings, normals = entry[:2]
+        costs = HOVER_FORCE_COST * entry[4] / CONTACT_SCHEDULE_PROXIMITY if len(entry) > 4 else None
+        adjusted, _ = self.support.solve(self.required_forces(x, xd, xdd), mappings, normals, costs)
         self._support_coefficients = self.support.coefficients.copy()
         self._force_cache = key, adjusted.copy()
         return adjusted
@@ -548,6 +558,28 @@ class RobotDynamics:
         gradient[0] += joint_weights @ (supported_dq-raw_dq) @ transform
         return gradient
 
+    def geometry_distance(self, x, index):
+        """Exact signed terrain distance of one collision geometry and its gradient."""
+        from support import cross
+        q = self.configuration(x)
+        self.pin.updateGeometryPlacements(self.model, self.data, self.geometry, self.geometry_data, q)
+        self.pin.computeJointJacobians(self.model, self.data, q)
+        geometry = self.geometry.geometryObjects[int(index)]
+        pose = self.geometry_data.oMg[int(index)]
+        result = self.coal.DistanceResult()
+        distance = self.coal.distance(geometry.geometry, self.coal.Transform3s(pose.rotation, pose.translation),
+                                      self.terrain, self.coal.Transform3s(), self.distance_request, result)
+        sign = 1.
+        if (self.terrain_mesh is not None and self.containment and distance > 0
+                and self.terrain_mesh.contains(result.getNearestPoint1().reshape(1, 3))[0]):
+            sign = -1.
+        joint = geometry.parentJoint
+        jac = self.pin.getJointJacobian(self.model, self.data, joint, self.pin.LOCAL_WORLD_ALIGNED)
+        offset = result.getNearestPoint1() - self.data.oMi[joint].translation
+        point_jac = jac[:3] + cross(jac[3:].T, offset).T
+        gradient = -np.asarray(result.normal) @ point_jac @ self.coordinate_jacobian(x)
+        return sign*distance, sign*gradient
+
     def clearances(self, x, derivatives=False, penetration_only=False, return_normals=False, exact=False,
                    schedule=None):
         from support import cross
@@ -583,7 +615,7 @@ class RobotDynamics:
             distances.append(distance)
             nearest_points.append(result.getNearestPoint1().copy())
             normals.append(-np.asarray(result.normal).copy())
-            if derivatives and (not penetration_only or distance < 0):
+            if derivatives and (not penetration_only or distance < SEARCH_CLEARANCE):
                 joint = geometry.parentJoint
                 jac = self.pin.getJointJacobian(self.model, self.data, joint, self.pin.LOCAL_WORLD_ALIGNED)
                 offset = result.getNearestPoint1() - self.data.oMi[joint].translation
@@ -640,7 +672,11 @@ class RobotDynamics:
                     contact_normals.append(np.asarray(normal))
                     active[contact] = int(index)
                     local_points.append(np.asarray(local_point))
-                entry = mappings, contact_normals, active, local_points
+                # The validator only accepts support within CONTACT_MARGIN.
+                # Hovering scheduled contacts stay usable, so the search is
+                # continuous, but cost more than closed ones.
+                hover = np.maximum(distances[active] - CONTACT_MARGIN, 0.) if len(active) else np.empty(0)
+                entry = mappings, contact_normals, active, local_points, hover
             self.contact_geometry[x.tobytes()] = entry
             self._contact_request[x.tobytes()] = self.contact_request(schedule)
         if derivatives:
@@ -677,6 +713,7 @@ class CollocationProblem:
         self.position_size = len(self.free) * self.d
         self._collision_variables = None
         self._collisions = {}
+        self._tangent = None
 
     def pack(self, positions, velocities):
         return np.r_[positions[self.free].ravel(), velocities.ravel()]
@@ -685,6 +722,34 @@ class CollocationProblem:
         positions = self.reference.copy()
         positions[self.free] = variables[:self.position_size].reshape(-1, self.d)
         return positions, variables[self.position_size:].reshape(self.n, self.d)
+
+    def implied_velocities(self, positions):
+        return np.gradient(positions, self.dt, axis=0, edge_order=2 if self.n > 2 else 1)
+
+    def consistent(self, positions):
+        """Variables whose nodal velocities are the ones the positions imply.
+
+        The saved trajectory contains positions only. Free nodal velocities
+        would let the Hermite curve satisfy the dynamics while the saved
+        frames hover, so the search and the validator both use these.
+        """
+        return self.pack(positions, self.implied_velocities(positions))
+
+    def expand(self, free_positions):
+        positions = self.reference.copy()
+        positions[self.free] = np.reshape(free_positions, (-1, self.d))
+        return self.consistent(positions)
+
+    @property
+    def tangent(self):
+        """Sparse derivative of expand(): maps free positions to all variables."""
+        if self._tangent is None:
+            from scipy.sparse import csr_matrix, identity, kron, vstack
+            difference = csr_matrix(self.implied_velocities(np.eye(self.n)))
+            columns = (self.free[:, None]*self.d + np.arange(self.d)).ravel()
+            velocity = kron(difference, identity(self.d), format='csc')[:, columns]
+            self._tangent = vstack((identity(self.position_size), velocity), format='csr')
+        return self._tangent
 
     def objective(self, variables):
         x, v = self.unpack(variables)
@@ -870,12 +935,7 @@ def _build_trajectory_output(payload, problem, robot, variables, fixed):
         if angle > 1e-9:
             r = min([r + k*2*np.pi*r/angle for k in (-1, 0, 1)], key=lambda v: np.linalg.norm(v-x[i, 3:6]))
         rounded[i, 3:6] = r
-    # The saved NPZ contains positions only. The accepted trajectory must be
-    # physically consistent with the velocities implied by those positions,
-    # not with free internal velocities that are never saved.
-    implied = np.gradient(rounded, problem.dt, axis=0,
-                          edge_order=2 if problem.n > 2 else 1)
-    return output, problem.pack(rounded, implied)
+    return output, problem.consistent(rounded)
 
 
 def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve_mesh=lambda _: None,
@@ -911,51 +971,71 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
             raise TrajectoryOptimizeError(f"Fixed keyframe {frame} penetrates terrain by {-clearance:.6g} m.")
     if friction is None:
         robot.check_fixed_dynamics(reference, fixed, 1/rate)
-    velocities = np.gradient(reference, 1/rate, axis=0, edge_order=2 if len(reference) > 2 else 1)
-    initial = problem.pack(reference, velocities)
+    initial = problem.consistent(reference)
+    # The solvers below only choose free positions; every evaluation expands
+    # them with the velocities those positions imply.
+    expand, tangent = problem.expand, problem.tangent
+    start = initial[:problem.position_size]
+
+    def objective(z):
+        return problem.objective(expand(z))
+
+    def objective_gradient(z):
+        return tangent.T @ problem.objective_gradient(expand(z))
+
+    def equalities(z):
+        return problem.equalities(expand(z))
+
+    def inequalities(z):
+        return problem.inequalities(expand(z))
+
+    def jacobian(z, equality):
+        return problem.constraint_jacobian(expand(z), equality) @ tangent
+
     if friction is not None:
         from trajectory_optimize_contacts import solve_contacts
         result = solve_contacts(problem, initial, deadline)
-    elif len(initial) > DENSE_VARIABLE_LIMIT:
-        from scipy.sparse import csr_matrix, diags
-        objective_hessian = diags(np.r_[np.full(problem.position_size, 2.),
-                                         np.full(problem.n * problem.d, 2e-8)], format="csr")
-        # Use the reference objective curvature with linearized constraints.
-        # Dense quasi-Newton Hessians/Jacobians would exhaust memory on the
-        # documented multi-thousand-frame motions.
-        constraint_hessian = csr_matrix((len(initial), len(initial)))
-        equalities = NonlinearConstraint(
-            problem.equalities, 0, 0,
-            jac=lambda x: problem.constraint_jacobian(x, equality=True),
-            hess=lambda x, multipliers: constraint_hessian)
-        inequalities = NonlinearConstraint(
-            problem.inequalities, 0, np.inf,
-            jac=lambda x: problem.constraint_jacobian(x, equality=False),
-            hess=lambda x, multipliers: constraint_hessian)
-        result = minimize(problem.objective, initial, method="trust-constr",
-                          jac=problem.objective_gradient, hess=lambda x: objective_hessian,
-                          constraints=[equalities, inequalities],
-                          options={"maxiter": 300, "gtol": 1e-6, "sparse_jacobian": True,
-                                   "initial_barrier_parameter": 1e-6, "initial_barrier_tolerance": 1e-6})
-    elif len(problem.equalities(initial)) > len(initial):
-        # Many fixed frames can make the collocation equations redundant.
-        # SLSQP rejects m > n outright; SVD permits compatible fixed data.
-        result = minimize(problem.objective, initial, method="trust-constr",
-                          jac=problem.objective_gradient,
-                          constraints=[NonlinearConstraint(problem.equalities, 0, 0,
-                                           jac=lambda x: problem.constraint_jacobian(x, True).toarray()),
-                                       NonlinearConstraint(problem.inequalities, 0, np.inf,
-                                           jac=lambda x: problem.constraint_jacobian(x, False).toarray())],
-                          options={"maxiter": 300, "gtol": 1e-8,
-                                   "factorization_method": "SVDFactorization"})
+    elif problem.position_size == 0:
+        # Every frame is fixed, so the trajectory and its velocities are given.
+        result = SimpleNamespace(x=initial, nit=0, success=True)
     else:
-        result = minimize(problem.objective, initial, method="SLSQP",
-                          jac=problem.objective_gradient,
-                          constraints=[{"type": "eq", "fun": problem.equalities,
-                                        "jac": lambda x: problem.constraint_jacobian(x, True).toarray()},
-                                       {"type": "ineq", "fun": problem.inequalities,
-                                        "jac": lambda x: problem.constraint_jacobian(x, False).toarray()}],
-                          options={"maxiter": 300, "ftol": 1e-9})
+        if problem.position_size > DENSE_VARIABLE_LIMIT:
+            from scipy.sparse import csr_matrix, diags
+            objective_hessian = (tangent.T @ diags(np.r_[np.full(problem.position_size, 2.),
+                                                         np.full(problem.n * problem.d, 2e-8)])
+                                 @ tangent).tocsr()
+            # Use the reference objective curvature with linearized constraints.
+            # Dense quasi-Newton Hessians/Jacobians would exhaust memory on the
+            # documented multi-thousand-frame motions.
+            constraint_hessian = csr_matrix((len(start), len(start)))
+            result = minimize(objective, start, method="trust-constr",
+                              jac=objective_gradient, hess=lambda z: objective_hessian,
+                              constraints=[NonlinearConstraint(
+                                               equalities, 0, 0, jac=lambda z: jacobian(z, True),
+                                               hess=lambda z, multipliers: constraint_hessian),
+                                           NonlinearConstraint(
+                                               inequalities, 0, np.inf, jac=lambda z: jacobian(z, False),
+                                               hess=lambda z, multipliers: constraint_hessian)],
+                              options={"maxiter": 300, "gtol": 1e-6, "sparse_jacobian": True,
+                                       "initial_barrier_parameter": 1e-6, "initial_barrier_tolerance": 1e-6})
+        elif len(equalities(start)) > len(start):
+            # Many fixed frames can make the collocation equations redundant.
+            # SLSQP rejects m > n outright; SVD permits compatible fixed data.
+            result = minimize(objective, start, method="trust-constr", jac=objective_gradient,
+                              constraints=[NonlinearConstraint(equalities, 0, 0,
+                                               jac=lambda z: jacobian(z, True).toarray()),
+                                           NonlinearConstraint(inequalities, 0, np.inf,
+                                               jac=lambda z: jacobian(z, False).toarray())],
+                              options={"maxiter": 300, "gtol": 1e-8,
+                                       "factorization_method": "SVDFactorization"})
+        else:
+            result = minimize(objective, start, method="SLSQP", jac=objective_gradient,
+                              constraints=[{"type": "eq", "fun": equalities,
+                                            "jac": lambda z: jacobian(z, True).toarray()},
+                                           {"type": "ineq", "fun": inequalities,
+                                            "jac": lambda z: jacobian(z, False).toarray()}],
+                              options={"maxiter": 300, "ftol": 1e-9})
+        result.x = expand(result.x)
     solver_message = "" if result.success else str(getattr(result, "message", ""))
     output, validation_variables = _build_trajectory_output(
         payload, problem, robot, result.x, fixed)

@@ -14,7 +14,6 @@ from time import perf_counter
 import numpy as np
 import scipy.optimize
 import trimesh
-from scipy.optimize._numdiff import approx_derivative
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'robot_trajectory_editor/backend'))
 from npz_io import parse_npz
@@ -67,20 +66,14 @@ def main():
         if not args.contact_free:
             kwargs['options']['maxiter'] = args.iterations
             return original(function, initial, **kwargs)
-        problem = function.__self__
         print(json.dumps({'stage': 'setup', 'seconds': perf_counter()-started,
                           'variables': len(initial)}), flush=True)
         if args.mode == 'constraints':
-            for name in ('equalities', 'inequalities'):
-                f = getattr(problem, name)
-                baseline = measure(name, lambda: f(initial))
-                jac = kwargs['constraints'][0 if name == 'equalities' else 1].jac
-                if callable(jac):
-                    measure(name + '_jacobian', lambda: jac(initial))
-                else:
-                    pattern = problem.constraint_sparsity(len(baseline) // (problem.n-1))
-                    measure(name + '_jacobian', lambda: approx_derivative(f, initial, method='2-point',
-                                                                         f0=baseline, sparsity=pattern))
+            for name, constraint in zip(('equalities', 'inequalities'), kwargs['constraints']):
+                f = constraint['fun'] if isinstance(constraint, dict) else constraint.fun
+                jac = constraint['jac'] if isinstance(constraint, dict) else constraint.jac
+                measure(name, lambda: f(initial))
+                measure(name + '_jacobian', lambda: jac(initial))
             raise SystemExit(0)
         kwargs['options']['maxiter'] = args.iterations
         if kwargs['method'] == 'trust-constr':
