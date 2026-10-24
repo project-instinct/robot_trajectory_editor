@@ -117,9 +117,11 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 ## Trajectory Optimize
 
 **Trajectory Optimize** optimizes the entire edited motion, regardless of the timeline
-selection. Every keyframe anchor fixes all joints and the full base pose exactly.
-Without anchors, the start and end frames are fixed boundary conditions and only the
-interior frames are eligible. Clicking the button opens the parameter dialog
+selection. The goal is the trajectory closest to the edited one that the robot can
+physically perform. Every keyframe anchor fixes all joints and the full base pose
+exactly. Without anchors, the start and end frames keep their joints, orientation
+and horizontal base position, but their base height may move, so a hovering or
+sunken endpoint can meet the terrain. Clicking the button opens the parameter dialog
 (`max_effort_scale`, terrain friction, target smoothing, glitch speed threshold). A validated result updates the editor as one
 undo step. A solver/validation failure returns the best candidate as a preview:
 **Keep** applies it as one undo step, **Dump** restores the original. Results are
@@ -166,11 +168,12 @@ collision primitive (a cylinder's end rims, a capsule's end spheres, a box's
 corners, a sphere's lowest point), so a flat-lying foot rests on its whole sole.
 Contacts are inferred from the motion:
 
-- **Initialization.** Free frames are shifted vertically by a smooth spline (knots
-  about 0.3 s apart) so the support geometry near an upward-facing surface rests
-  0.5 mm above it. Near a supported fixed frame the shift blends into that frame's
-  own height. A fixed frame that hovers more than 1 mm is airborne: its neighbours
-  fall from (or rise into) its height ballistically, as a drop or a hop.
+- **Initialization.** Free frames (including the untagged endpoints) are shifted
+  vertically by a smooth spline (knots about 0.3 s apart) so the support geometry
+  near an upward-facing surface rests 0.5 mm above it. Near a supported keyframe the
+  shift blends into that frame's own height. A keyframe that hovers more than 1 mm
+  is airborne: its neighbours fall from (or rise into) its height ballistically, as
+  a drop or a hop.
 - **Contact schedule.** Each frame schedules the support points that are within
   2 cm of an upward-facing surface and barely move toward or away from it (below
   0.3 m/s; sliding along it below 2 m/s is allowed, so a rolling back keeps its
@@ -277,14 +280,13 @@ In the reference the hands stay 12-17 cm above the floor while the body is
 clearly held up (frames 342-368, centre-of-mass acceleration about -2 m/s²), so
 without inferred support the body would have to fall freely and hit the floor at
 about 2 m/s. With support from the dynamics the hands and then the back carry it.
-With 45 s, 236 of 262 frames before the dive (0-261), 37 of 192 in the dive roll
-(262-453) and 224 of 267 standing frames (454-720) pass every check; the solver adds
-0.27° RMS of 2-10 Hz wobble to the standing part (with the weaker 20 rad/s²
-acceleration term: 96, 9 and 134 frames, 0.44°). The final frame hovers 17.7 mm,
-so the fixed endpoint forces a 2 cm hop in the last frames. The take-off and the
-dive itself still exceed the waist, hip and knee limits, and the G1 collision model
-has no hands, forearms, thighs or shins: hand support is carried by the wrist
-cylinders.
+With 45 s, 237 of 262 frames before the dive (0-261), 37 of 192 in the dive roll
+(262-453) and 254 of 297 standing frames (454-750) pass every check; the solver adds
+0.25° RMS of 2-10 Hz wobble to the standing part. The endpoints move down by 11 mm
+and 20.5 mm onto the floor instead of forcing a drop and a final hop. The take-off
+and the dive itself still exceed the waist, hip and knee limits, and the G1
+collision model has no hands, forearms, thighs or shins: hand support is carried by
+the wrist cylinders.
 
 Earlier measurements (before target smoothing):
 

@@ -119,4 +119,15 @@ describe('Trajectory Optimize', () => {
     await expect(runTrajectoryOptimize()).rejects.toThrow('fixed keyframe 1')
     expect(useStore.getState().undoStack).toHaveLength(0)
   })
+
+  it('lets untagged endpoints change only their base height', async () => {
+    useStore.getState().trajectory.keyframes.clear()
+    api.mockResolvedValue(response())  // moves both endpoints vertically
+    await runTrajectoryOptimize()
+    expect(useStore.getState().trajectory.basePoseW[2]).toBe(3)
+    const moved = response()
+    moved.trajectory.base_pos_w[2][0] = .5
+    api.mockResolvedValue(moved)
+    await expect(runTrajectoryOptimize()).rejects.toThrow('fixed endpoint 2')
+  })
 })

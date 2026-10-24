@@ -489,11 +489,19 @@ class Problem:
     its Jacobian is one dense block and the Gauss-Newton system is banded.
     """
 
-    def __init__(self, robot, reference, fixed, dt):
+    def __init__(self, robot, reference, fixed, dt, vertical=()):
         self.robot, self.reference, self.dt = robot, reference, dt
         self.n, self.nv = len(reference), robot.model.nv
         self.free = np.ones(self.n, dtype=bool)
         self.free[fixed] = False
+        # Frames that may only move their base vertically (untagged endpoints):
+        # their steps are projected onto the world-z base translation, which
+        # in Pinocchio's local free-flyer tangent is R^T e_z.
+        self.vertical = {}
+        for k in vertical:
+            direction = np.zeros(self.nv)
+            direction[:3] = robot.pin.XYZQUATToSE3(reference[k][:7]).rotation.T @ np.array([0., 0., 1.])
+            self.vertical[int(k)] = np.outer(direction, direction)
         self.data_scale = np.r_[np.full(3, DATA_SCALE["base_position"]), np.full(3, DATA_SCALE["base_rotation"]),
                                 np.full(self.nv - 6, DATA_SCALE["joint"])]
         # Support-point keys that may carry support at each frame, and the
@@ -779,6 +787,9 @@ def frame_equations(problem, frames, terms):
         if not len(residual):
             continue
         block = block.reshape(len(residual), 3, nv) * movable[k:k+3, None]
+        for j, frame in enumerate((k - 1, k, k + 1)):
+            if frame in problem.vertical:
+                block[:, j] = block[:, j] @ problem.vertical[frame]
         normal = np.einsum("rin,rjm->injm", block, block)
         for j in range(3):
             diagonal[i+j] += normal[j, :, j]
@@ -829,6 +840,8 @@ class Evaluation:
                 gradient[start:end] += g
             movable = np.zeros(frames, dtype=bool)
             movable[1:n+1] = problem.free
+            for k, projection in problem.vertical.items():
+                diagonal[k + 1] += np.eye(nv) - projection
             self.equations = diagonal, next1, next2, gradient, movable
 
     def predicted(self, step):
@@ -953,6 +966,8 @@ def levenberg_marquardt(problem, Q, evaluate, stop, accept=None, patience=3):
         changed = False
         try:
             step = solve_normal_equations(current.equations, damping, problem.data_scale**-2)[1:problem.n+1]
+            for k, projection in problem.vertical.items():
+                step[k] = projection @ step[k]
         except np.linalg.LinAlgError:
             damping *= 10
             continue
@@ -1206,7 +1221,8 @@ def initialize(problem):
     n, dt = problem.n, problem.dt
     Q = problem.reference.copy()
     for k in np.flatnonzero(problem.free):
-        Q[k][robot.joint_q] = np.clip(Q[k][robot.joint_q], robot.lower, robot.upper)
+        if k not in problem.vertical:
+            Q[k][robot.joint_q] = np.clip(Q[k][robot.joint_q], robot.lower, robot.upper)
     if robot.support is None:
         return Q
     measured = [robot.distances(q) for q in Q]
@@ -1452,7 +1468,7 @@ def smooth_target(robot, reference, fixed, rate, smoothing_hz, glitch_speed_scal
     return target, repaired
 
 
-def _build_output(payload, robot, Q, fixed):
+def _build_output(payload, robot, Q, fixed, vertical=()):
     output = copy.deepcopy(payload)
     positions, quats, joints = zip(*(robot.pose(q) for q in Q))
     output["base_pos_w"] = np.asarray(positions).astype(np.float32).tolist()
@@ -1461,6 +1477,12 @@ def _build_output(payload, robot, Q, fixed):
     for frame in fixed:
         for field in ("joint_pos", "base_pos_w", "base_quat_w"):
             output[field][frame] = copy.deepcopy(payload[field][frame])
+    # Untagged endpoints keep everything but their base height exactly.
+    for frame in vertical:
+        height = output["base_pos_w"][frame][2]
+        for field in ("joint_pos", "base_pos_w", "base_quat_w"):
+            output[field][frame] = copy.deepcopy(payload[field][frame])
+        output["base_pos_w"][frame][2] = height
     # Validate the float32 trajectory that the editor will keep.
     saved = np.array([robot.configuration(p, r, j) for p, r, j in
                       zip(output["base_pos_w"], output["base_quat_w"], output["joint_pos"])])
@@ -1475,7 +1497,8 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     `smoothing_hz` is the low-pass cutoff of the target the solver stays
     close to (0 keeps every frame's detail). `glitch_speed_scale` repairs
     joint jumps faster than that multiple of the URDF velocity limit in the
-    target (0 disables). Fixed frames are never changed.
+    target (0 disables). Tagged keyframes are never changed; without them the
+    first and last frames keep everything but their base height.
     """
     started = perf_counter()
     if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
@@ -1485,20 +1508,22 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
             raise TrajectoryOptimizeError(f"{name} must be a finite number at least 0.")
     names, rate, positions, joints, quats, fixed = read_trajectory(payload, keyframes)
     # With no tagged keyframes the trajectory endpoints are the boundary
-    # conditions; only the interior frames are optimized.
-    if not fixed:
-        fixed = [0, len(positions) - 1]
+    # conditions: they keep their pose except the base height, which may move
+    # so that a hovering or sunken endpoint can meet the terrain.
+    vertical = [] if fixed else sorted({0, len(positions) - 1})
     robot = RobotModel(urdf_path, names, terrain_obj, resolve_mesh, friction, effort_scale=max_effort_scale)
     reference = np.array([robot.configuration(p, r, j) for p, r, j in zip(positions, quats, joints)])
-    for frame in fixed:
+    for frame in fixed + vertical:
         x = reference[frame][robot.joint_q]
+        kind = "Fixed keyframe" if frame in fixed else "Endpoint"
         if np.any(x < robot.lower - TOLERANCES["position"]) or np.any(x > robot.upper + TOLERANCES["position"]):
-            raise TrajectoryOptimizeError(f"Fixed keyframe {frame} violates joint position limits.")
+            raise TrajectoryOptimizeError(f"{kind} {frame} violates joint position limits.")
+    for frame in fixed:
         clearance = float(np.min(robot.distances(reference[frame])[0]))
         if clearance < -TOLERANCES["clearance"]:
             raise TrajectoryOptimizeError(f"Fixed keyframe {frame} penetrates terrain by {-clearance:.6g} m.")
-    target, repaired = smooth_target(robot, reference, fixed, rate, smoothing_hz, glitch_speed_scale)
-    problem = Problem(robot, target, fixed, 1 / rate)
+    target, repaired = smooth_target(robot, reference, fixed + vertical, rate, smoothing_hz, glitch_speed_scale)
+    problem = Problem(robot, target, fixed, 1 / rate, vertical)
     workers = int(os.environ.get("TRAJECTORY_OPTIMIZE_WORKERS", 0)) or max(1, min(12, (os.cpu_count() or 1) - 2))
     workers = min(workers, max(1, problem.n // 60))
     deadline = started + time_budget
@@ -1510,7 +1535,7 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     evaluator = Evaluator(problem, workers)
     try:
         def check(candidate):
-            _, saved = _build_output(payload, robot, candidate, fixed)
+            _, saved = _build_output(payload, robot, candidate, fixed, vertical)
             return validate(problem, saved, evaluator)
 
         # Keep time for the final validation, a few residual passes long.
@@ -1520,7 +1545,7 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
         iterations, reason, checked = 0, None, None
         if problem.free.any():
             Q, iterations, reason, checked = optimize(problem, Q, evaluator, deadline - reserve, check)
-        output, saved = _build_output(payload, robot, Q, fixed)
+        output, saved = _build_output(payload, robot, Q, fixed, vertical)
         residuals, worst, summary = checked if checked is not None else validate(problem, saved, evaluator)
     finally:
         evaluator.close()
@@ -1533,8 +1558,8 @@ def optimize_trajectory(payload, keyframes, urdf_path, terrain_obj=None, resolve
     if worst is not None:
         stopped = f" Optimizer stopped: {reason}." if reason else ""
         result["error"] = f"Validation failed: {worst}.{stopped}"
-    keys = (f"frames {', '.join(map(str, fixed))}" if keyframes
-            else f"none (frames 0 and {len(positions) - 1} fixed)")
+    keys = (f"frames {', '.join(map(str, fixed))}" if fixed
+            else f"none (frames 0 and {len(positions) - 1} fixed except their base height)")
     mass = robot.weight / np.linalg.norm(robot.model.gravity.linear)
     terrain = ("flat ground z=0" if robot.terrain_mesh is None else
                f"mesh with {len(robot.terrain_mesh.faces)} triangles, bounds "

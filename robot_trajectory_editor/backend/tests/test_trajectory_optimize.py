@@ -91,10 +91,13 @@ def test_contact_free_motion_recovers_ballistic_flight_and_keeps_fixed_frames(sp
     assert result["success"], result.get("error")
     output = result["trajectory"]
     assert output["framerate"] == data["framerate"] and output["joint_names"] == []
-    # No keyframes: the first and last frames are the fixed boundary poses.
-    assert output["base_pos_w"][0] == data["base_pos_w"][0]
-    assert output["base_pos_w"][-1] == data["base_pos_w"][-1]
-    np.testing.assert_allclose(np.array(output["base_pos_w"])[:, 2], heights, atol=1e-4)
+    # No keyframes: the endpoints keep their poses except the base height.
+    for frame in (0, -1):
+        assert output["base_pos_w"][frame][:2] == data["base_pos_w"][frame][:2]
+        assert output["base_quat_w"][frame] == data["base_quat_w"][frame]
+    # The result is a free-fall parabola.
+    z = np.array(output["base_pos_w"])[:, 2]
+    np.testing.assert_allclose(np.diff(z, 2) * data["framerate"]**2, -9.81, atol=1e-2)
 
 
 def test_tagged_keyframes_stay_exact_and_others_are_free(sphere_urdf):
@@ -114,12 +117,28 @@ def test_supported_hovering_interior_is_lowered_onto_the_ground(sphere_urdf):
     assert np.all(heights - .1 <= CONTACT_MARGIN)
 
 
-def test_hovering_first_frame_becomes_a_drop(sphere_urdf):
-    result = optimize_trajectory(motion([.109] + [.1005]*40, rate=90.), [], sphere_urdf, friction=.7)
+def test_hovering_tagged_first_frame_becomes_a_drop(sphere_urdf):
+    result = optimize_trajectory(motion([.109] + [.1005]*40, rate=90.), [0, 40], sphere_urdf, friction=.7)
     assert result["success"], result.get("error")
     heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
     assert heights[0] == pytest.approx(.109)
     assert np.all(np.diff(heights[:4]) < 0)
+
+
+def test_untagged_hovering_or_sunken_endpoints_move_only_vertically(sphere_urdf):
+    # The first frame hovers 9 mm and the last sinks 3 mm: both are moved
+    # onto the ground instead of forcing a drop and a jump out of the floor.
+    quat = (np.array([.98, .1, .1, .1]) / np.linalg.norm([.98, .1, .1, .1])).tolist()
+    heights = .1 + np.r_[.009, np.full(28, 5e-4), -.003]
+    data = {"framerate": 30., "joint_names": [], "joint_pos": [[]] * 30,
+            "base_pos_w": [[.2, -.1, h] for h in heights], "base_quat_w": [quat] * 30}
+    result = optimize_trajectory(data, [], sphere_urdf, friction=.7, smoothing_hz=0.)
+    assert result["success"], result.get("report")
+    output = result["trajectory"]
+    for frame in (0, -1):
+        assert output["base_quat_w"][frame] == data["base_quat_w"][frame]
+        assert output["base_pos_w"][frame][:2] == data["base_pos_w"][frame][:2]
+        assert -1e-5 <= output["base_pos_w"][frame][2] - .1 <= CONTACT_MARGIN
 
 
 def test_static_hover_with_every_frame_fixed_fails_with_preview_and_report(sphere_urdf):
@@ -162,13 +181,13 @@ def test_multiplier_update_accumulates_violations_and_grows_stalled_penalties():
 
 def test_fixed_keyframe_penetration_is_rejected(sphere_urdf):
     with pytest.raises(TrajectoryOptimizeError, match="penetrates terrain"):
-        optimize_trajectory(motion([.05, .1, .1]), [], sphere_urdf, friction=.7)
+        optimize_trajectory(motion([.05, .1, .1]), [0, 2], sphere_urdf, friction=.7)
 
 
 def test_stands_on_a_loaded_terrain_mesh(sphere_urdf):
     terrain = "v -5 -5 1\nv 5 -5 1\nv 5 5 1\nv -5 5 1\nf 1 2 3\nf 1 3 4\n"
-    result = optimize_trajectory(motion([1.1005] + [1.12]*18 + [1.1005], rate=30.), [], sphere_urdf,
-                                 terrain_obj=terrain, friction=.7, smoothing_hz=0.)
+    # Hovering 2 cm above the mesh throughout, endpoints included.
+    result = optimize_trajectory(motion([1.12]*20, rate=30.), [], sphere_urdf, terrain_obj=terrain, friction=.7)
     assert result["success"], result.get("error")
     heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
     assert np.all(heights - 1.1 <= CONTACT_MARGIN)

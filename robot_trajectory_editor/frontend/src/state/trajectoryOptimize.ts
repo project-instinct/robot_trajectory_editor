@@ -29,11 +29,19 @@ export async function runTrajectoryOptimize(urdfPath?: string, isCurrentRobot = 
       JSON.stringify(processed.jointNames) !== JSON.stringify(source.jointNames)) {
     throw new Error('Trajectory Optimize returned incompatible trajectory metadata.')
   }
-  const fixedFrames = keyframes.length ? keyframes : [0, source.frameCount - 1]
+  // Keyframes are exact. Without keyframes the first and last frames keep
+  // everything but their base height, which may move onto the terrain.
+  const endpointsOnly = keyframes.length === 0
+  const fixedFrames = endpointsOnly ? [0, source.frameCount - 1] : keyframes
   for (const frame of fixedFrames) {
     for (const field of ['joint_pos', 'base_pos_w', 'base_quat_w'] as const) {
-      if (JSON.stringify(result.trajectory[field][frame]) !== JSON.stringify(snapshot[field][frame])) {
-        const kind = keyframes.includes(frame) ? 'keyframe' : 'frame'
+      const value = result.trajectory[field][frame]
+      const expected = snapshot[field][frame]
+      const kept = endpointsOnly && field === 'base_pos_w'
+        ? value[0] === expected[0] && value[1] === expected[1]
+        : JSON.stringify(value) === JSON.stringify(expected)
+      if (!kept) {
+        const kind = endpointsOnly ? 'endpoint' : 'keyframe'
         throw new Error(`Trajectory Optimize changed fixed ${kind} ${frame}; result discarded.`)
       }
     }
