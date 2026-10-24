@@ -1340,7 +1340,16 @@ def infer_schedule(problem, Q, previous=None):
         if previous is not None and len(previous[k]):
             kept = [key for key, _, gap in within_reach if key in set(previous[k].tolist()) and gap < SCHEDULE_GAP]
             schedule[k] = np.union1d(schedule[k], np.array(kept, dtype=int)).astype(int)
-    return steady_schedule(problem, schedule)
+    schedule = steady_schedule(problem, schedule)
+    # A frame that may only move vertically cannot put a tilted foot flat:
+    # holding several of its points to the terrain would fight non-penetration.
+    # It keeps only its lowest point, which brings it onto the terrain.
+    for k in getattr(problem, "vertical", {}):
+        if len(schedule[k]) > 1:
+            _, nearest, outward = robot.distances(Q[k])
+            gaps = [robot.support_point(key, nearest, outward)[2] for key in schedule[k]]
+            schedule[k] = schedule[k][[int(np.argmin(gaps))]]
+    return schedule
 
 
 def runs(mask):

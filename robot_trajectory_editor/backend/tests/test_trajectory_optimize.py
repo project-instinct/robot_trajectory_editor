@@ -371,3 +371,18 @@ def test_held_up_hovering_body_is_brought_onto_the_ground(sphere_urdf):
     assert result["success"], result.get("report")
     heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
     assert np.all(heights - .1 <= CONTACT_MARGIN)
+
+
+def test_tilted_endpoint_is_lowered_without_penetrating(articulated_urdf):
+    # An endpoint that may only move vertically, with the body tilted so that
+    # only one sphere can touch: it is lowered onto that sphere, not pushed in.
+    robot = RobotModel(articulated_urdf, ["hinge"], None, lambda _: None, friction=.7)
+    quat = (np.array([.98, .1, .1, .1]) / np.linalg.norm([.98, .1, .1, .1])).tolist()
+    q = robot.configuration([0., 0., 1.], quat, [.3])
+    lift = 1. - robot.distances(q)[0].min()
+    data = {"framerate": 30., "joint_names": ["hinge"], "joint_pos": [[.3]] * 3,
+            "base_pos_w": [[0., 0., lift + .02]] * 3, "base_quat_w": [quat] * 3}
+    result = optimize_trajectory(data, [], articulated_urdf, friction=.7, smoothing_hz=0., time_budget=10.)
+    last = result["trajectory"]
+    q = robot.configuration(last["base_pos_w"][-1], last["base_quat_w"][-1], last["joint_pos"][-1])
+    assert robot.distances(q)[0].min() >= -1e-5
