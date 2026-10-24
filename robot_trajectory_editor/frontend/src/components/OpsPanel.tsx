@@ -55,7 +55,7 @@ export function OpsPanel({ urdfPath }: { urdfPath?: string }) {
       <button onClick={interpolateRange}>Interpolate</button>
       <button onClick={() => setShowCartesianInterpolate(true)}>Cartesian Interpolate</button>
       <button onClick={() => setShowSegments(true)}>Segments</button>
-      <button disabled={!robotModelLoaded || trajectory.frameCount < 2} onClick={() => setShowOptimize(true)}>
+      <button disabled={!robotModelLoaded || trajectory.frameCount < 3} onClick={() => setShowOptimize(true)}>
         Trajectory Optimize
       </button>
       <button onClick={togglePlay}>{isPlaying ? 'Pause' : 'Play'}</button>

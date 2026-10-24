@@ -129,8 +129,10 @@ def read_trajectory(payload, keyframes):
     joints = np.asarray(payload["joint_pos"], dtype=float)
     quats = np.asarray(payload["base_quat_w"], dtype=float)
     n = len(positions)
-    if not np.isfinite(rate) or rate <= 0 or n < 2:
-        raise TrajectoryOptimizeError("Trajectory Optimize requires at least two frames and a positive finite frame rate.")
+    # Dynamics are checked at interior frames only (central differences), so
+    # a shorter motion could never be physically validated.
+    if not np.isfinite(rate) or rate <= 0 or n < 3:
+        raise TrajectoryOptimizeError("Trajectory Optimize requires at least three frames and a positive finite frame rate.")
     if not isinstance(names, list) or any(not isinstance(v, str) for v in names) or len(set(names)) != len(names):
         raise TrajectoryOptimizeError("Joint names must be unique strings.")
     for name, array, shape in (("base_pos_w", positions, (n, 3)),

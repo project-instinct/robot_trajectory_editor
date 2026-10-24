@@ -52,6 +52,9 @@ def articulated_urdf(sphere_urdf, tmp_path):
 
 
 def test_invalid_quaternion_and_keyframe_diagnostics():
+    # Two frames have no interior frame whose dynamics could be checked.
+    with pytest.raises(TrajectoryOptimizeError, match="at least three frames"):
+        read_trajectory(motion([1., 1.]), [])
     data = motion([1., 1., 1.])
     with pytest.raises(TrajectoryOptimizeError, match="Keyframes"):
         read_trajectory(data, [3])
