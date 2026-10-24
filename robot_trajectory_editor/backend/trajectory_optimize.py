@@ -312,6 +312,9 @@ class RobotModel:
 
         Each triangle contributes its z extent to every XY cell its bounding
         box covers, so the union of the cell AABBs contains the whole terrain.
+        A point inside a watertight solid has terrain surface above and below
+        it in its own column, so its bound is never positive and culling never
+        hides an enclosed shape from the containment check.
         """
         low, high = mesh.bounds
         x0, y0 = low[0] - cell, low[1] - cell
@@ -735,17 +738,18 @@ class Problem:
 
         if self.free[k]:
             self.geometry_terms(q, k, add, constrain, stats, jacobian)
-            # Joint position limits, about the middle of each range.
+            # Joint position limits: upper then lower bound of each joint, so a
+            # one-sided range keeps its finite bound (an infinite one is -inf).
             x = q[robot.joint_q]
-            middle, half = (robot.upper + robot.lower) / 2, (robot.upper - robot.lower) / 2
-            offset = np.where(np.isfinite(half), x - middle, 0.)
-            stats["position"] = float(max(np.max(np.abs(offset) - half, initial=0.), 0.))
+            joints = len(x)
+            excess = np.r_[x - robot.upper, robot.lower - x]
+            stats["position"] = float(max(np.max(excess, initial=0.), 0.))
             hit, residual, factor = constrain(
-                "position", np.where(np.isfinite(half), (np.abs(offset) - (half - SOLVER_MARGIN["position"]))
-                                     / SOLVER_SCALE["position"], -np.inf), True)
+                "position", (excess + SOLVER_MARGIN["position"]) / SOLVER_SCALE["position"], True)
             if len(hit):
                 part = np.zeros((len(hit), nv))
-                part[np.arange(len(hit)), 6 + hit] = np.sign(offset[hit]) * factor / SOLVER_SCALE["position"]
+                part[np.arange(len(hit)), 6 + hit % joints] = np.where(hit < joints, 1., -1.) * factor \
+                    / SOLVER_SCALE["position"]
                 add(residual, current=part)
             # Stay close to the target.
             scale = self.data_scale / np.sqrt(weights["data"])

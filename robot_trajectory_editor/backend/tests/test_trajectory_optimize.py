@@ -1,6 +1,7 @@
 """Analytic fixtures for Trajectory Optimize; no user motion files are needed."""
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -470,3 +471,34 @@ def test_frictionless_contact_never_slides_in_an_undefined_direction(sphere_urdf
     values = [{}, {"support": (np.array([7]), np.array([[0., 0., 10.]]), np.array([[0., 0., 1.]]),
                                np.zeros((1, 2)), np.array([True]), False)}, {}]
     assert update_sliding(problem, values) == [] and problem.sliding[1] == {}
+
+
+def test_geometry_wholly_inside_a_solid_terrain_is_penetrating(sphere_urdf):
+    # A 4 m solid box with 0.5 m terrain cells: a sphere at its centre is 2 m
+    # from the surface but inside the solid, so culling must not hide it.
+    import trimesh
+    box = trimesh.creation.box(extents=[4., 4., 4.])
+    obj = "".join(f"v {x} {y} {z}\n" for x, y, z in box.vertices) + \
+        "".join(f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in box.faces)
+    robot = RobotModel(sphere_urdf, [], obj, lambda _: None, friction=.7)
+    assert robot.containment and robot.terrain_grid is not None
+    inside = robot.configuration([0., 0., 0.], [1., 0., 0., 0.], [])
+    for cull in (None, CONTACT_MARGIN):
+        assert robot.distances(inside, cull=cull)[0].min() < -1.
+    outside = robot.configuration([0., 0., 4.], [1., 0., 0., 0.], [])
+    assert robot.distances(outside, cull=CONTACT_MARGIN)[0].min() > 1.
+
+
+def test_one_sided_joint_limit_is_still_enforced(articulated_urdf, tmp_path):
+    path = tmp_path / "one_sided.urdf"
+    path.write_text(Path(articulated_urdf).read_text().replace(
+        '<limit lower="-2" upper="2" velocity="5" effort="20"/>', '<limit upper="1" velocity="5" effort="20"/>')
+        .replace('type="revolute"', 'type="prismatic"'))
+    robot = RobotModel(str(path), ["hinge"], None, lambda _: None)
+    if np.isfinite(robot.lower[0]):
+        pytest.skip("this URDF parser does not leave the missing bound infinite")
+    Q = np.array([robot.configuration([0., 0., 2.], [1., 0., 0., 0.], [x]) for x in (1.2, 1.2, 1.2)])
+    problem = Problem(robot, Q, [], .1)
+    residual, block, stats, values = problem.terms(Q, 1, True, dynamics=False)
+    assert stats["position"] == pytest.approx(.2)
+    assert np.isfinite(values["position"]).sum() == 1
