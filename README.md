@@ -186,7 +186,10 @@ Contacts are inferred from the motion:
   bring that geometry to the terrain, for example hands catching a dive whose
   retargeted arms stop short of the floor.
 - **Refresh.** The schedule is read again from the current trajectory after every
-  multiplier update, so contact timing can move with the motion.
+  multiplier update, so contact timing can move with the motion; a point stays
+  scheduled while it is within reach, so the schedule does not flip on small changes.
+- **Steadiness.** Contacts and breaks in a contact shorter than 0.05 s are removed,
+  so feet are not held and released on alternate frames.
 
 ### Solver
 
@@ -208,9 +211,9 @@ are small. The stages are:
 2. The augmented-Lagrangian loop on the full problem, with two regularization
    terms: one stays close to the target poses (1 cm or 0.02 rad per unit, weight
    `1` in the first solve and `1e-2` after it) and one stays close to the target's
-   accelerations (20 m/s² or rad/s² per unit, always at full weight). The latter
-   stops the solver from shaking a limb at the frame rate to manufacture momentum,
-   which central differences cannot see. Each inner solve gets at most a third of
+   accelerations (5 m/s² or rad/s² per unit, always at full weight). The latter
+   stops the solver from shaking a limb to satisfy each frame's contacts: a frame-rate
+   zigzag that central differences cannot see, or a slow 2-10 Hz wobble. Each inner solve gets at most a third of
    the remaining time, so the multipliers are updated before the budget runs out.
 
 The support forces are re-allocated at every evaluation by a bounded least-squares
@@ -273,14 +276,15 @@ fixed, 751 frames, defaults): the reference jitters by 0.83° RMS (high-pass, ma
 In the reference the hands stay 12-17 cm above the floor while the body is
 clearly held up (frames 342-368, centre-of-mass acceleration about -2 m/s²), so
 without inferred support the body would have to fall freely and hit the floor at
-about 2 m/s. With support from the dynamics the hands and then the back carry it
-and the landing frames pass within a few N. With 45 s, 205 of the 559 frames outside
-the dive roll (frames 262-453) and 9 of its 192 pass every check (jitter 0.38°
-RMS); with 150 s, 271 and 30 (0.30°). It still fails at the short flight between
-the feet leaving and the hands landing (frames about 326-340): the reference keeps
-accelerating upward after the feet leave, so the feet are held down until frame
-324 and the hands from frame 342, and bridging that in 0.2 s exceeds the waist,
-hip and knee limits (about 900 N of base force and 300-480 Nm of effort there).
+about 2 m/s. With support from the dynamics the hands and then the back carry it.
+With 45 s, 236 of 262 frames before the dive (0-261), 37 of 192 in the dive roll
+(262-453) and 224 of 267 standing frames (454-720) pass every check; the solver adds
+0.27° RMS of 2-10 Hz wobble to the standing part (with the weaker 20 rad/s²
+acceleration term: 96, 9 and 134 frames, 0.44°). The final frame hovers 17.7 mm,
+so the fixed endpoint forces a 2 cm hop in the last frames. The take-off and the
+dive itself still exceed the waist, hip and knee limits, and the G1 collision model
+has no hands, forearms, thighs or shins: hand support is carried by the wrist
+cylinders.
 
 Earlier measurements (before target smoothing):
 

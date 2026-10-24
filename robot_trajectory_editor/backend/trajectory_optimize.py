@@ -74,15 +74,19 @@ SUPPORT_NEED = .2
 SUPPORT_WINDOW = .1
 SUPPORT_REACH = .25
 SUPPORT_LINK_BAND = .05
+# A scheduled support point stays scheduled for at least this long, and a
+# break in its contact shorter than this is closed, so feet are not held and
+# released on alternate frames.
+SCHEDULE_STEADY = .05
 # Poses checked between consecutive frames by the validator.
 SUBSAMPLES = 8
 # Distances from the edited trajectory that count as one unit of data error.
 DATA_SCALE = {"base_position": 1e-2, "base_rotation": 2e-2, "joint": 2e-2}
-# Acceleration change from the edited trajectory (m/s^2 or rad/s^2) that counts
-# as one unit of data error. Central differences cannot see a frame-to-frame
-# zigzag in velocity, so without this term the solver may shake a limb at the
-# frame rate to manufacture momentum.
-ACCELERATION_SCALE = 20.
+# Acceleration change from the target (m/s^2 or rad/s^2) that counts as one
+# unit of data error. Central differences cannot see a frame-to-frame zigzag in
+# velocity, and a slow 2-10 Hz wobble of a degree costs only a few rad/s^2, so
+# a weaker term lets the solver shake limbs to satisfy each frame's contacts.
+ACCELERATION_SCALE = 5.
 # Least-squares weights: "data" and "acceleration" scale the two terms that
 # stay close to the target; the others are the augmented-Lagrangian penalty
 # factors of each constraint kind ("middle" is clearance between frames).
@@ -1056,7 +1060,7 @@ def optimize(problem, Q, evaluator, stop, validate):
             # Contact timing may move with the motion (an earlier touchdown,
             # a later lift-off): read the schedule again from the current
             # trajectory, and restart the multipliers of frames that changed.
-            for k, keys in enumerate(infer_schedule(problem, Q)):
+            for k, keys in enumerate(infer_schedule(problem, Q, problem.schedule)):
                 if not np.array_equal(keys, problem.schedule[k]):
                     problem.schedule[k] = keys
                     multipliers[k].pop("contact", None)
@@ -1249,7 +1253,7 @@ def initialize(problem):
     return Q
 
 
-def infer_schedule(problem, Q):
+def infer_schedule(problem, Q, previous=None):
     """Support points that may carry load at each frame of trajectory Q.
 
     Proximity: points near an upward-facing surface that barely move toward
@@ -1259,6 +1263,11 @@ def infer_schedule(problem, Q):
     it to the terrain (for example hands catching a dive). Fixed frames may
     only use support already inside the contact margin, and frames joined to
     a hovering fixed pose by a ballistic arc stay airborne.
+
+    With a `previous` schedule (a refresh during the solve), a point that was
+    scheduled stays scheduled while it is still within reach, so the schedule
+    does not flip on small changes. Finally contacts and breaks shorter than
+    SCHEDULE_STEADY are removed over free frames.
     """
     from scipy.signal import savgol_filter
     robot, pin, model = problem.robot, problem.robot.pin, problem.robot.model
@@ -1312,7 +1321,34 @@ def infer_schedule(problem, Q):
         schedule[k] = lowest_points(resting, SCHEDULE_LINK_BAND)
         if not len(schedule[k]) and needs_support[k]:
             schedule[k] = lowest_points(within_reach, SUPPORT_LINK_BAND)
-    return schedule
+        if previous is not None and len(previous[k]):
+            kept = [key for key, _, gap in within_reach if key in set(previous[k].tolist()) and gap < SCHEDULE_GAP]
+            schedule[k] = np.union1d(schedule[k], np.array(kept, dtype=int)).astype(int)
+    return steady_schedule(problem, schedule)
+
+
+def runs(mask):
+    """(start, end) of each run of True values, end exclusive."""
+    edges = np.flatnonzero(np.diff(np.r_[0, np.asarray(mask, dtype=int), 0]))
+    return list(zip(edges[::2], edges[1::2]))
+
+
+def steady_schedule(problem, schedule):
+    """Close short breaks in each support point's contact and drop short
+    contacts, over free frames that are not on a ballistic arc."""
+    n = len(schedule)
+    span = max(1, round(SCHEDULE_STEADY / problem.dt))
+    movable = problem.free & ~problem.airborne
+    keys = np.unique(np.concatenate(list(schedule) + [np.empty(0, dtype=int)])).astype(int)
+    present = np.array([np.isin(keys, s) for s in schedule]).reshape(n, len(keys))
+    for on in present.T:
+        for start, end in runs(~on):
+            if 0 < start and end < n and end - start < span and movable[start:end].all():
+                on[start:end] = True
+        for start, end in runs(on):
+            if end - start < span and movable[start:end].all():
+                on[start:end] = False
+    return [keys[row] for row in present]
 
 
 def repair_glitches(robot, joints, fixed, rate, speed_scale, longest=.25):
