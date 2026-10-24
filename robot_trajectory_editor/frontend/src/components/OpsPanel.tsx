@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CartesianInterpolateModal } from './CartesianInterpolateModal'
 import { SegmentsModal } from './SegmentsModal'
 import { TrajectoryOptimizeModal } from './TrajectoryOptimizeModal'
+import { interpolatedFrame, playbackPosition } from '../state/playback'
+import { getViewport } from '../three/viewportContext'
 
 export function OpsPanel({ urdfPath }: { urdfPath?: string }) {
   const { fillRange, smoothRange, interpolateRange, isPlaying, setIsPlaying, trajectory, robotModelLoaded } = useStore()
@@ -16,21 +18,34 @@ export function OpsPanel({ urdfPath }: { urdfPath?: string }) {
     setIsPlaying(!isPlaying)
   }, [isPlaying, setIsPlaying])
 
+  // Playback follows the wall clock at the loaded trajectory's own frame rate,
+  // whatever the display refresh rate, and draws the pose between frames.
   useEffect(() => {
     if (!isPlaying) return
-    const interval = 1000 / trajectory.framerate
-    timerRef.current = window.setInterval(() => {
+    const playing = useStore.getState().trajectory
+    const startFrame = useStore.getState().currentFrame
+    const start = startFrame >= playing.frameCount - 1 ? 0 : startFrame
+    const startedAt = performance.now()
+    const tick = (now: number) => {
       const store = useStore.getState()
-      const next = store.currentFrame + 1
-      if (next >= store.trajectory.frameCount) {
+      const position = playbackPosition(start, (now - startedAt) / 1000, playing.framerate)
+      if (position >= playing.frameCount - 1) {
         store.setIsPlaying(false)
         store.setCurrentFrame(0)
-      } else {
-        store.setCurrentFrame(next)
+        return
       }
-    }, interval)
-    return () => window.clearInterval(timerRef.current)
-  }, [isPlaying, trajectory.framerate])
+      const frame = Math.floor(position)
+      if (frame !== store.currentFrame) store.setCurrentFrame(frame)
+      const robot = getViewport()?.robotModel
+      if (robot) {
+        const pose = interpolatedFrame(playing, position)
+        robot.applyFrame(pose.jointPos, pose.basePoseW, pose.baseQuatW)
+      }
+      timerRef.current = requestAnimationFrame(tick)
+    }
+    timerRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(timerRef.current)
+  }, [isPlaying, trajectory])
 
   return (
     <div style={panelStyle}>

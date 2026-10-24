@@ -114,6 +114,13 @@ python backend/app.py --robot-urdf <path> [--port 5000] [--host 127.0.0.1] [--nu
 | `base_pos_w` | `(F, 3)` | float32 | base position, world xyz |
 | `base_quat_w` | `(F, 4)` | float32 | base orientation, world wxyz |
 
+Each file keeps its own frame rate (any numeric dtype is read; it is saved as
+float32). The state panel shows it next to the frame number. Playback runs in real
+time at that rate, independent of the display refresh rate, and draws the robot
+between neighbouring frames (joints and base position blended linearly, base
+orientation along the shorter arc). Paused, scrubbed and edited poses are always
+the exact stored frames, and Trajectory Optimize uses `dt = 1 / framerate`.
+
 ## Trajectory Optimize
 
 **Trajectory Optimize** optimizes the entire edited motion, regardless of the timeline

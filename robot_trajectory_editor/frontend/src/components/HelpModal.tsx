@@ -52,7 +52,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Interpolate: linearly interpolate the selected channel between the selected segment endpoints.</Item>
             <Item>Cartesian Interpolate: choose links, a position-only or position-and-orientation constraint for each, and linear or cubic interpolation. For jumps, prefer full pose on the torso and position only on the ankles. If any frame fails, no changes are applied.</Item>
             <Item>Trajectory Optimize: optimize all frames using robot dynamics, joint limits and terrain geometry. Every keyframe fixes the full robot configuration; without keyframes the first and last frames keep their pose except the base height, which may move onto the terrain. Support forces are inferred at terrain contacts using the configurable friction coefficient μ (default 0.7). Target smoothing (Hz) low-pass filters the motion the optimizer follows, and the glitch speed threshold repairs joint jumps faster than that multiple of the URDF velocity limit; 0 disables either. A validated result is one undo step. If optimization or validation fails (including running out of time), the best candidate is shown as a preview that you can keep or dump.</Item>
-            <Item>Play / Pause: play the trajectory at its framerate.</Item>
+            <Item>Play / Pause: play the trajectory in real time at the loaded file's frame rate (shown next to the frame number), drawing the pose between frames. Paused and edited poses are the exact stored frames.</Item>
           </Section>
         </div>
       </div>
