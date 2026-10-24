@@ -179,6 +179,14 @@ Contacts are inferred from the motion:
   (within 1 cm) qualify. The solver keeps scheduled points at most 0.9 mm above
   the terrain, inside the 1 mm contact margin, and all geometry at least 0.05 mm
   above it.
+- **Support from the dynamics.** A free frame without such points whose centre of
+  mass is clearly not in free fall (it needs an external force above 20% of body
+  weight, from its acceleration smoothed over 0.1 s) schedules its lowest geometry
+  within 25 cm, on links within 5 cm of the lowest one. The solver then has to
+  bring that geometry to the terrain, for example hands catching a dive whose
+  retargeted arms stop short of the floor.
+- **Refresh.** The schedule is read again from the current trajectory after every
+  multiplier update, so contact timing can move with the motion.
 
 ### Solver
 
@@ -260,15 +268,19 @@ python scripts/audit_feasibility.py motion.npz robot.urdf --terrain terrain.stl
 Measured on the development machine (14 cores), μ = 0.7, 45 s budget:
 
 Nokov `diveroll4` (`20251106_diveroll4_simpleLab_noWall`, flat ground, endpoints
-fixed, 751 frames, defaults, 45 s): the reference jitters by 0.83° RMS (high-pass,
-max 41°, a 1.3 rad one-frame wrist jump at frame 444); the result jitters by about
-0.2-0.3° RMS and 62 joint samples are repaired. Outside the dive roll (frames
-262-453) about 150-270 of 559 frames pass every check (7 before the
-augmented-Lagrangian loop). The run fails on the dive itself: the take-off (frames
-about 303-311) needs waist, hip and knee torques beyond the G1 limits, and at frame
-372 the reference body reaches the floor falling at about 2 m/s with nothing to
-brake it, which needs several kN for a frame. Fixing that needs a different landing,
-not a small correction of the reference.
+fixed, 751 frames, defaults): the reference jitters by 0.83° RMS (high-pass, max
+41°, a 1.3 rad one-frame wrist jump at frame 444); 62 joint samples are repaired.
+In the reference the hands stay 12-17 cm above the floor while the body is
+clearly held up (frames 342-368, centre-of-mass acceleration about -2 m/s²), so
+without inferred support the body would have to fall freely and hit the floor at
+about 2 m/s. With support from the dynamics the hands and then the back carry it
+and the landing frames pass within a few N. With 45 s, 205 of the 559 frames outside
+the dive roll (frames 262-453) and 9 of its 192 pass every check (jitter 0.38°
+RMS); with 150 s, 271 and 30 (0.30°). It still fails at the short flight between
+the feet leaving and the hands landing (frames about 326-340): the reference keeps
+accelerating upward after the feet leave, so the feet are held down until frame
+324 and the hands from frame 342, and bridging that in 0.2 s exceeds the waist,
+hip and knee limits (about 900 N of base force and 300-480 Nm of effort there).
 
 Earlier measurements (before target smoothing):
 

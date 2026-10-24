@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Problem, RobotModel, TrajectoryOptimizeError,
-                                 frame_equations, initialize, optimize_trajectory, read_trajectory,
+                                 frame_equations, infer_schedule, initialize, optimize_trajectory, read_trajectory,
                                  repair_glitches, smooth_target, solve_normal_equations, update_multipliers,
                                  validate_frame)
 
@@ -326,3 +326,29 @@ def test_smoothed_target_removes_jitter_and_keeps_fixed_frames_exact(articulated
 def test_target_options_are_validated(sphere_urdf, option):
     with pytest.raises(TrajectoryOptimizeError, match=option):
         optimize_trajectory(motion(ballistic(3)), [], sphere_urdf, **{option: -1.})
+
+
+def test_support_is_inferred_where_the_motion_is_not_free_fall(sphere_urdf):
+    robot = RobotModel(sphere_urdf, [], None, lambda _: None, friction=.7)
+    rate = 30.
+    # Held still 10 cm above the ground: something must support it.
+    held = np.array([robot.configuration([0., 0., .2], [1., 0., 0., 0.], [])] * 30)
+    schedule = infer_schedule(Problem(robot, held, [0, 29], 1 / rate), held)
+    assert all(len(keys) == 1 for keys in schedule[1:-1])
+    # Falling freely from the same height: nothing is needed.
+    t = np.arange(30) / rate
+    falling = np.array([robot.configuration([0., 0., .35 - 4.905 * x * x + .5 * x], [1., 0., 0., 0.], [])
+                        for x in t[:8]])
+    schedule = infer_schedule(Problem(robot, falling, [0, 7], 1 / rate), falling)
+    assert all(len(keys) == 0 for keys in schedule[1:-1])
+
+
+def test_held_up_hovering_body_is_brought_onto_the_ground(sphere_urdf):
+    # The interior hovers 6 cm up, beyond the proximity schedule, while the
+    # endpoints rest on the ground. Support inferred from the dynamics
+    # brings it down instead of leaving an unsupported hover.
+    result = optimize_trajectory(motion([.1005] + [.16]*28 + [.1005], rate=30.), [], sphere_urdf, friction=.7,
+                                 smoothing_hz=0.)
+    assert result["success"], result.get("report")
+    heights = np.array(result["trajectory"]["base_pos_w"])[:, 2]
+    assert np.all(heights - .1 <= CONTACT_MARGIN)

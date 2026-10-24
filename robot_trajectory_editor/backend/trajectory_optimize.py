@@ -65,6 +65,15 @@ SCHEDULE_SLIDE_SPEED = 2.
 SCHEDULE_NORMAL_Z = .5
 SCHEDULE_POINT_BAND = 1e-3
 SCHEDULE_LINK_BAND = 1e-2
+# Support inferred from the dynamics: a frame whose centre of mass needs an
+# external force above this share of body weight (its acceleration, smoothed
+# over SUPPORT_WINDOW seconds, is clearly not free fall) and that has no
+# resting support schedules its lowest geometry within SUPPORT_REACH, on links
+# within SUPPORT_LINK_BAND of the lowest one (both hands, say).
+SUPPORT_NEED = .2
+SUPPORT_WINDOW = .1
+SUPPORT_REACH = .25
+SUPPORT_LINK_BAND = .05
 # Poses checked between consecutive frames by the validator.
 SUBSAMPLES = 8
 # Distances from the edited trajectory that count as one unit of data error.
@@ -483,8 +492,10 @@ class Problem:
         self.free[fixed] = False
         self.data_scale = np.r_[np.full(3, DATA_SCALE["base_position"]), np.full(3, DATA_SCALE["base_rotation"]),
                                 np.full(self.nv - 6, DATA_SCALE["joint"])]
-        # Support-point keys that may carry support at each frame.
+        # Support-point keys that may carry support at each frame, and the
+        # frames joined to a hovering fixed pose by a ballistic arc.
         self.schedule = [np.empty(0, dtype=int) for _ in range(self.n)]
+        self.airborne = np.zeros(self.n, dtype=bool)
         # Second differences of the edited trajectory, in each frame's tangent.
         self.reference_curvature = np.zeros((self.n, self.nv))
         for k in range(1, self.n - 1):
@@ -775,8 +786,11 @@ def frame_equations(problem, frames, terms):
 
 
 def _evaluate_frames(args):
-    Q, frames, jacobian, weights, multipliers, dynamics = args
+    Q, frames, jacobian, weights, multipliers, schedule, dynamics = args
     problem = _WORKER["problem"]
+    # The schedule is refreshed during the solve; forked workers get it here.
+    for k, keys in zip(frames, schedule):
+        problem.schedule[k] = keys
     terms = [problem.terms(Q, k, jacobian, weights, None if multipliers is None else multipliers[i], dynamics)
              for i, k in enumerate(frames)]
     cost = sum(float(r @ r) for r, _, _, _ in terms)
@@ -847,8 +861,10 @@ class Evaluator:
     def evaluate(self, Q, jacobian, weights=None, multipliers=None, dynamics=True):
         """Evaluate every frame. `multipliers` is a per-frame list of
         per-kind arrays, or None."""
+        schedule = self.problem.schedule
         return Evaluation(self.problem, self.map(_evaluate_frames, [
-            (Q, chunk, jacobian, weights, None if multipliers is None else [multipliers[k] for k in chunk], dynamics)
+            (Q, chunk, jacobian, weights, None if multipliers is None else [multipliers[k] for k in chunk],
+             [schedule[k] for k in chunk], dynamics)
             for chunk in self.chunks]))
 
     def validate(self, Q):
@@ -1003,7 +1019,8 @@ def optimize(problem, Q, evaluator, stop, validate):
     drive the constraints to zero while the terms that stay close to the
     target (and stop frame-rate shaking) keep fixed weights. Each inner solve
     gets at most a third of the remaining time, so the multipliers are
-    updated well before the budget runs out.
+    updated well before the budget runs out. The contact schedule is read
+    again from the trajectory after each update.
     """
     def slice_end():
         now = perf_counter()
@@ -1035,6 +1052,14 @@ def optimize(problem, Q, evaluator, stop, validate):
             return Q, iterations, "time budget exhausted", None
         previous = update_multipliers(evaluator.evaluate(Q, False, weights, multipliers), multipliers, weights,
                                       previous)
+        if problem.robot.support is not None:
+            # Contact timing may move with the motion (an earlier touchdown,
+            # a later lift-off): read the schedule again from the current
+            # trajectory, and restart the multipliers of frames that changed.
+            for k, keys in enumerate(infer_schedule(problem, Q)):
+                if not np.array_equal(keys, problem.schedule[k]):
+                    problem.schedule[k] = keys
+                    multipliers[k].pop("contact", None)
 
 
 def validate_frame(problem, Q, k):
@@ -1219,39 +1244,75 @@ def initialize(problem):
     offset += lift
     for k in np.flatnonzero(problem.free):
         Q[k][2] += offset[k]
-    # Contact schedule from the aligned trajectory: support points near an
-    # upward-facing surface that are nearly at rest or already penetrating.
-    # Fixed frames cannot be moved onto the terrain; they may only use support
-    # that is already inside the contact margin.
+    problem.airborne = airborne
+    problem.schedule = infer_schedule(problem, Q)
+    return Q
+
+
+def infer_schedule(problem, Q):
+    """Support points that may carry load at each frame of trajectory Q.
+
+    Proximity: points near an upward-facing surface that barely move toward
+    or away from it (or already penetrate). Dynamics: a free frame with no such
+    point whose centre of mass is clearly not in free fall needs support, so
+    its lowest geometry within reach is scheduled and the solver has to bring
+    it to the terrain (for example hands catching a dive). Fixed frames may
+    only use support already inside the contact margin, and frames joined to
+    a hovering fixed pose by a ballistic arc stay airborne.
+    """
+    from scipy.signal import savgol_filter
+    robot, pin, model = problem.robot, problem.robot.pin, problem.robot.model
+    n, dt = problem.n, problem.dt
     joints = [g.parentJoint for g in robot.geometry.geometryObjects]
+    com = np.array([pin.centerOfMass(model, robot.data, q).copy() for q in Q])
+    window = int(round(SUPPORT_WINDOW / dt)) // 2 * 2 + 1
+    if n >= window and window >= 5:
+        acceleration = savgol_filter(com, window, 2, deriv=2, delta=dt, axis=0)
+    else:
+        order = 2 if n > 2 else 1
+        acceleration = np.gradient(np.gradient(com, dt, axis=0, edge_order=order), dt, axis=0, edge_order=order)
+    gravity = np.asarray(model.gravity.linear)
+    mass = robot.weight / np.linalg.norm(gravity)
+    needs_support = np.linalg.norm(mass * (acceleration - gravity), axis=1) > SUPPORT_NEED * robot.weight
+    schedule = [np.empty(0, dtype=int) for _ in range(n)]
+    airborne = getattr(problem, "airborne", np.zeros(n, dtype=bool))
+
+    def lowest_points(candidates, link_band):
+        lowest = {}
+        for _, joint, gap in candidates:
+            lowest[joint] = min(lowest.get(joint, np.inf), gap)
+        floor = min(lowest.values(), default=np.inf)
+        return np.array([key for key, joint, gap in candidates
+                         if lowest[joint] <= floor + link_band and gap <= lowest[joint] + SCHEDULE_POINT_BAND],
+                        dtype=int)
+
     for k in np.flatnonzero(~airborne):
+        reach = SUPPORT_REACH if problem.free[k] and needs_support[k] else SCHEDULE_GAP
         distance, nearest, outward = robot.distances(Q[k])
         before, after = max(k - 1, 0), min(k + 1, n - 1)
         velocity = pin.difference(model, Q[before], Q[after]) / ((after - before) * dt)
         pin.computeJointJacobians(model, robot.data, Q[k])
         if not problem.free[k]:
-            problem.schedule[k] = np.array([key for index in np.flatnonzero(distance <= CONTACT_MARGIN)
-                                            for key in robot.support_keys(index, nearest, outward)
-                                            if robot.support_point(key, nearest, outward)[2] <= CONTACT_MARGIN],
-                                           dtype=int)
+            schedule[k] = np.array([key for index in np.flatnonzero(distance <= CONTACT_MARGIN)
+                                    for key in robot.support_keys(index, nearest, outward)
+                                    if robot.support_point(key, nearest, outward)[2] <= CONTACT_MARGIN], dtype=int)
             continue
-        candidates = []
-        for index in np.flatnonzero(distance < SCHEDULE_GAP):
+        resting, within_reach = [], []
+        for index in np.flatnonzero(distance < reach):
             for key in robot.support_keys(index, nearest, outward):
                 _, point, gap, normal = robot.support_point(key, nearest, outward)
+                if normal[2] <= SCHEDULE_NORMAL_Z or gap >= reach:
+                    continue
+                within_reach.append((key, joints[index], gap))
                 speed = robot.point_jacobian(index, point) @ velocity
                 moving = (abs(speed @ normal) >= SCHEDULE_NORMAL_SPEED
                           or np.linalg.norm(speed - (speed @ normal) * normal) >= SCHEDULE_SLIDE_SPEED)
-                if gap < SCHEDULE_GAP and normal[2] > SCHEDULE_NORMAL_Z and (gap < 0 or not moving):
-                    candidates.append((key, joints[index], gap))
-        lowest = {}
-        for _, joint, gap in candidates:
-            lowest[joint] = min(lowest.get(joint, np.inf), gap)
-        floor = min(lowest.values(), default=np.inf)
-        problem.schedule[k] = np.array([key for key, joint, gap in candidates
-                                        if lowest[joint] <= floor + SCHEDULE_LINK_BAND
-                                        and gap <= lowest[joint] + SCHEDULE_POINT_BAND], dtype=int)
-    return Q
+                if gap < SCHEDULE_GAP and (gap < 0 or not moving):
+                    resting.append((key, joints[index], gap))
+        schedule[k] = lowest_points(resting, SCHEDULE_LINK_BAND)
+        if not len(schedule[k]) and needs_support[k]:
+            schedule[k] = lowest_points(within_reach, SUPPORT_LINK_BAND)
+    return schedule
 
 
 def repair_glitches(robot, joints, fixed, rate, speed_scale, longest=.25):
