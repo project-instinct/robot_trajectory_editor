@@ -85,3 +85,30 @@ def test_trajectory_optimize_uses_requested_model_and_propagates_failure(tmp_pat
     assert 'trajectory' not in response.get_json()
     response = app.test_client().post('/api/trajectory/optimize', json={'urdf_path': '../outside.urdf'})
     assert response.status_code == 400
+
+
+def test_trajectory_optimize_runs_one_request_at_a_time(tmp_path, monkeypatch):
+    import threading
+    import time
+    import app as app_module
+    path = tmp_path / 'robot.urdf'
+    path.write_text('model')
+    monkeypatch.setattr(app_module, 'ROBOT_URDF_PATH', str(path))
+    running, overlap = [0], [False]
+
+    def solve(*args, **kwargs):
+        running[0] += 1
+        overlap[0] |= running[0] > 1
+        time.sleep(.05)
+        running[0] -= 1
+        return {'success': True}
+    monkeypatch.setattr(app_module, 'optimize_trajectory', solve)
+
+    def post():
+        assert app.test_client().post('/api/trajectory/optimize', json={'trajectory': {}}).status_code == 200
+    threads = [threading.Thread(target=post) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not overlap[0]

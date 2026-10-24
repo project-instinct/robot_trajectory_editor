@@ -6,6 +6,7 @@ import os
 import tempfile
 import shutil
 import sys
+import threading
 
 from flask import Flask, request, jsonify, send_file, abort
 from npz_io import parse_npz, serialize_npz
@@ -17,6 +18,10 @@ ROBOT_URDF_PATH: str | None = None
 UPLOADED_ROBOT_DIR: str | None = None
 CURRENT_URDF_REL: str | None = None
 NUDGE_STEP: float = 0.01
+# One Trajectory Optimize at a time: each run forks a worker pool and sets the
+# process-wide BLAS thread limit, which overlapping runs in the threaded
+# server would fight over (and forking beside a running solve can deadlock).
+OPTIMIZE_LOCK = threading.Lock()
 FRAME_STEP: int = 1
 
 
@@ -268,9 +273,10 @@ def optimize_trajectory_endpoint():
         if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
             raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
         options = {key: payload[key] for key in ("smoothing_hz", "glitch_speed_scale") if key in payload}
-        result = optimize_trajectory(payload["trajectory"], payload.get("keyframes", []),
-                                    path, terrain, resolve_mesh_path, friction=friction,
-                                    max_effort_scale=max_effort_scale, **options)
+        with OPTIMIZE_LOCK:
+            result = optimize_trajectory(payload["trajectory"], payload.get("keyframes", []),
+                                        path, terrain, resolve_mesh_path, friction=friction,
+                                        max_effort_scale=max_effort_scale, **options)
         return jsonify(result), (200 if result.get("success", True) else 422)
     except (TrajectoryOptimizeError, KeyError, TypeError, ValueError, OSError) as error:
         return jsonify({"error": str(error)}), 422
