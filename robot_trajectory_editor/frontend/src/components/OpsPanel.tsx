@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { CartesianInterpolateModal } from './CartesianInterpolateModal'
 import { SegmentsModal } from './SegmentsModal'
 import { TrajectoryOptimizeModal } from './TrajectoryOptimizeModal'
-import { interpolatedFrame, playbackPosition } from '../state/playback'
+import { interpolatedFrame, PlaybackClock } from '../state/playback'
 import { getViewport } from '../three/viewportContext'
 
 export function OpsPanel({ urdfPath }: { urdfPath?: string }) {
@@ -23,12 +23,12 @@ export function OpsPanel({ urdfPath }: { urdfPath?: string }) {
   useEffect(() => {
     if (!isPlaying) return
     const playing = useStore.getState().trajectory
-    const startFrame = useStore.getState().currentFrame
-    const start = startFrame >= playing.frameCount - 1 ? 0 : startFrame
-    const startedAt = performance.now()
+    if (useStore.getState().currentFrame >= playing.frameCount - 1) useStore.getState().setCurrentFrame(0)
+    // Seeking during playback (timeline, arrow keys) continues from there.
+    const clock = new PlaybackClock(useStore.getState().currentFrame, performance.now(), playing.framerate)
     const tick = (now: number) => {
       const store = useStore.getState()
-      const position = playbackPosition(start, (now - startedAt) / 1000, playing.framerate)
+      const position = clock.position(now, store.currentFrame)
       if (position >= playing.frameCount - 1) {
         store.setIsPlaying(false)
         store.setCurrentFrame(0)

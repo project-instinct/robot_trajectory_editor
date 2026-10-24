@@ -6,6 +6,32 @@ export function playbackPosition(start: number, elapsedSeconds: number, framerat
   return start + Math.max(elapsedSeconds, 0) * framerate
 }
 
+/** Wall-clock playback position that follows the user's seeks: whenever the
+ *  current frame is not the one playback last showed, it restarts from there. */
+export class PlaybackClock {
+  private start: number
+  private startedAt: number
+  private shown: number
+  private readonly framerate: number
+
+  constructor(start: number, now: number, framerate: number) {
+    this.framerate = framerate
+    this.start = start
+    this.startedAt = now
+    this.shown = start
+  }
+
+  position(now: number, currentFrame: number): number {
+    if (currentFrame !== this.shown) {
+      this.start = currentFrame
+      this.startedAt = now
+    }
+    const position = playbackPosition(this.start, (now - this.startedAt) / 1000, this.framerate)
+    this.shown = Math.floor(position)
+    return position
+  }
+}
+
 /** Pose between the two frames around a fractional position, for display only:
  *  joints and base position are blended linearly, the base orientation along
  *  the shorter arc. The trajectory itself is never changed. */

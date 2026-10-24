@@ -72,6 +72,28 @@ describe('Trajectory Optimize', () => {
     expect(useStore.getState().trajectory.toJSON()).toEqual(before)
   })
 
+  it('dumps exactly its own preview, never an earlier edit', async () => {
+    const store = useStore.getState()
+    store.beginTrajectoryEdit()  // an earlier, legitimate edit
+    store.trajectory.jointPos[0] = 5
+    const edited = useStore.getState().trajectory.toJSON()
+    api.mockResolvedValue({ ...response(), success: false, error: 'Validation failed' })
+    const outcome = await runTrajectoryOptimize()
+    // An edit on top of the preview is discarded with it.
+    useStore.getState().beginTrajectoryEdit()
+    useStore.getState().trajectory.jointPos[1] = 7
+    expect(useStore.getState().revertTo(outcome.original!)).toBe(true)
+    expect(useStore.getState().trajectory.toJSON()).toEqual(edited)
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    // Already undone with Ctrl+Z: dumping it again changes nothing.
+    api.mockResolvedValue({ ...response(), success: false, error: 'Validation failed' })
+    const second = await runTrajectoryOptimize()
+    useStore.getState().undo()
+    expect(useStore.getState().revertTo(second.original!)).toBe(false)
+    expect(useStore.getState().trajectory.toJSON()).toEqual(edited)
+    expect(useStore.getState().undoStack).toHaveLength(1)
+  })
+
   it('leaves data and undo history unchanged on solver failure', async () => {
     const before = useStore.getState().trajectory.toJSON()
     api.mockRejectedValue(new Error('dynamics residual 0.1'))

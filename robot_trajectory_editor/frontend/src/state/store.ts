@@ -51,6 +51,9 @@ export interface StoreState {
   /** Notify that the current trajectory was mutated in place. */
   touchTrajectory: () => void
   undo: () => void
+  /** Return to `entry`, an undo-stack snapshot, dropping it and every later
+   *  step. Returns false (and changes nothing) if it is no longer on the stack. */
+  revertTo: (entry: Trajectory) => boolean
   setCurrentFrame: (f: number) => void
   setSelectedChannel: (c: ChannelKind | null) => void
   /** Select the previous/next channel within the current channel block, wrapping at its edges. */
@@ -145,6 +148,19 @@ export const useStore = create<StoreState>((set, get) => ({
       trajectoryVersion: s.trajectoryVersion + 1,
       baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
     }))
+  },
+  revertTo: (entry) => {
+    const { undoStack, currentFrame } = get()
+    const index = undoStack.lastIndexOf(entry)
+    if (index < 0) return false
+    set(s => ({
+      trajectory: entry,
+      undoStack: s.undoStack.slice(0, index),
+      currentFrame: entry.frameCount === 0 ? 0 : Math.min(currentFrame, entry.frameCount - 1),
+      trajectoryVersion: s.trajectoryVersion + 1,
+      baseTransform: null, baseTransformSource: null, baseTransformOrigin: null,
+    }))
+    return true
   },
   setCurrentFrame: (f) => set({ currentFrame: f }),
   setSelectedChannel: (c) => set({ selectedChannel: c }),

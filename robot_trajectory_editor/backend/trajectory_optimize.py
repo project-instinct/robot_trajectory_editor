@@ -856,8 +856,14 @@ class Problem:
         return derivative
 
 
-# Forked evaluation workers inherit the problem; only configurations travel.
+# A forked worker's own problem, set once by its pool initializer; only
+# configurations travel. The parent never reads it, so overlapping requests
+# in one server process keep their own problems.
 _WORKER = {}
+
+
+def _init_worker(problem):
+    _WORKER["problem"] = problem
 
 
 def frame_equations(problem, frames, terms):
@@ -891,9 +897,9 @@ def frame_equations(problem, frames, terms):
     return frames[0], diagonal, next1, next2, gradient
 
 
-def _evaluate_frames(args):
+def _evaluate_frames(args, problem=None):
     Q, frames, jacobian, weights, multipliers, schedule, sliding, dynamics = args
-    problem = _WORKER["problem"]
+    problem = problem or _WORKER["problem"]
     # The schedule and the stick/slip modes are refreshed during the solve;
     # forked workers get them here (with each frame's neighbours).
     for k, keys, modes in zip(range(frames[0] - 1, frames[-1] + 2), schedule, sliding):
@@ -907,9 +913,10 @@ def _evaluate_frames(args):
             frame_equations(problem, frames, terms) if jacobian else None)
 
 
-def _validate_frames(args):
+def _validate_frames(args, problem=None):
     Q, frames = args
-    return [validate_frame(_WORKER["problem"], Q, k) for k in frames]
+    problem = problem or _WORKER["problem"]
+    return [validate_frame(problem, Q, k) for k in frames]
 
 
 class Evaluation:
@@ -953,12 +960,12 @@ class Evaluator:
     """Frame-parallel evaluation through a forked worker pool."""
 
     def __init__(self, problem, workers):
-        _WORKER["problem"] = problem
         self.problem = problem
         self.pool = None
         if workers > 1:
             try:
-                self.pool = multiprocessing.get_context("fork").Pool(workers)
+                # Forked children inherit the initializer arguments as memory.
+                self.pool = multiprocessing.get_context("fork").Pool(workers, _init_worker, (problem,))
             except (ValueError, OSError):
                 self.pool = None
         count = workers if self.pool is not None else 1
@@ -966,7 +973,7 @@ class Evaluator:
 
     def map(self, function, arguments):
         if self.pool is None:
-            return [function(args) for args in arguments]
+            return [function(args, self.problem) for args in arguments]
         return self.pool.map(function, arguments)
 
     def evaluate(self, Q, jacobian, weights=None, multipliers=None, dynamics=True):
@@ -1242,10 +1249,12 @@ def update_sliding(problem, values):
                     speed = float(np.linalg.norm(slip))
                     if speed >= SLIDE_STOP:
                         modes[key] = tangent_basis(normal).T @ slip / speed
-                elif not support[5] and at_friction_limit(force, normal, friction):
+                elif not support[5] and friction > 0 and at_friction_limit(force, normal, friction):
                     unit = normal / np.linalg.norm(normal)
                     tangential = force - (force @ unit) * unit
-                    modes[key] = -tangential / np.linalg.norm(tangential)
+                    # Without a friction direction there is nothing to slide against.
+                    if np.linalg.norm(tangential) > 1e-9:
+                        modes[key] = -tangential / np.linalg.norm(tangential)
         if modes.keys() != problem.sliding[k].keys():
             changed.append(k)
         problem.sliding[k] = modes

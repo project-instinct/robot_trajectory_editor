@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Problem, RobotModel, TrajectoryOptimizeError,
+from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Evaluator, Problem, RobotModel, TrajectoryOptimizeError,
                                  frame_equations, infer_schedule, initialize, optimize_trajectory, read_trajectory,
                                  repair_glitches, smooth_target, solve_normal_equations, update_multipliers,
                                  update_sliding, validate_frame)
@@ -445,3 +445,25 @@ def test_static_friction_is_the_limit_that_stops_slipping(sphere_urdf):
     np.testing.assert_allclose(problem.sliding[1][7], [-1., 0., 0.], atol=1e-12)
     assert update_sliding(problem, values([5., 0., 10.], True, moving * 1e-2)) == [1]
     assert problem.sliding[1] == {}
+
+
+def test_overlapping_requests_evaluate_their_own_problems(sphere_urdf, articulated_urdf):
+    # Two requests in one server process: creating the second evaluator must
+    # not redirect the first one's single-process evaluation.
+    sphere = RobotModel(sphere_urdf, [], None, lambda _: None, friction=.7)
+    arm = RobotModel(articulated_urdf, ["hinge"], None, lambda _: None, friction=.7)
+    first = Problem(sphere, np.array([sphere.configuration([0., 0., .3], [1., 0., 0., 0.], [])] * 4), [], .1)
+    first_evaluator = Evaluator(first, 1)
+    expected = first_evaluator.evaluate(first.reference, False).cost
+    second = Problem(arm, np.array([arm.configuration([0., 0., 1.], [1., 0., 0., 0.], [.2])] * 9), [], .1)
+    Evaluator(second, 1)
+    assert first_evaluator.evaluate(first.reference, False).cost == expected
+    assert len(first_evaluator.validate(first.reference)) == 4
+
+
+def test_frictionless_contact_never_slides_in_an_undefined_direction(sphere_urdf):
+    robot = RobotModel(sphere_urdf, [], None, lambda _: None, friction=0.)
+    problem = Problem(robot, np.array([robot.configuration([0., 0., .1], [1., 0., 0., 0.], [])] * 3), [], 1 / 30)
+    values = [{}, {"support": (np.array([7]), np.array([[0., 0., 10.]]), np.array([[0., 0., 1.]]),
+                               np.zeros((1, 2)), np.array([True]), False)}, {}]
+    assert update_sliding(problem, values) == [] and problem.sliding[1] == {}

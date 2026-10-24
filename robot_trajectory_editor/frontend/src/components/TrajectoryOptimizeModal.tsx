@@ -60,8 +60,10 @@ export function TrajectoryOptimizeModal({ urdfPath, onClose }: Props) {
     setCopied(true)
   }
 
+  // Discard exactly this preview (and any edits made on top of it). If it is
+  // already gone, for example undone with Ctrl+Z, there is nothing to discard.
   const dump = () => {
-    useStore.getState().undo()
+    if (result?.original) useStore.getState().revertTo(result.original)
     onClose()
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { interpolatedFrame, playbackPosition, slerp } from '../state/playback'
+import { interpolatedFrame, PlaybackClock, playbackPosition, slerp } from '../state/playback'
 import { Trajectory } from '../state/Trajectory'
 
 function trajectory(framerate: number) {
@@ -32,5 +32,14 @@ describe('playback', () => {
   it('interpolates orientation along the shorter arc', () => {
     const q = slerp(new Float32Array([1, 0, 0, 0]), new Float32Array([-1, 0, 0, 0]), .5)
     expect(Math.abs(q[0])).toBeCloseTo(1)
+  })
+
+  it('continues from wherever the user seeks during playback', () => {
+    const clock = new PlaybackClock(0, 0, 90)
+    expect(clock.position(500, 0)).toBe(45)
+    // The player showed frame 45; the user seeks to frame 300 at t = 0.6 s.
+    expect(clock.position(600, 300)).toBe(300)
+    expect(clock.position(700, 300)).toBeCloseTo(309)
+    expect(clock.position(800, 309)).toBeCloseTo(318)
   })
 })

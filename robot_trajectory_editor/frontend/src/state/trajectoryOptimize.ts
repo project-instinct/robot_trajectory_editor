@@ -4,7 +4,8 @@ import { exportTerrainObj } from '../three/Terrain'
 import { Trajectory } from './Trajectory'
 import { useStore } from './store'
 
-/** Apply only a validated result for the exact trajectory and scene submitted. */
+/** Apply only a validated result for the exact trajectory and scene submitted.
+ *  A failed result is shown as a preview; `original` is its undo entry. */
 export async function runTrajectoryOptimize(urdfPath?: string, isCurrentRobot = () => true,
                                            options: TrajectoryOptimizeOptions = DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS) {
   const store = useStore.getState()
@@ -49,11 +50,13 @@ export async function runTrajectoryOptimize(urdfPath?: string, isCurrentRobot = 
   processed.keyframes = new Set(keyframes)
   if (result.success === false) {
     // Show the failed candidate as a preview. The original is pushed to the
-    // undo stack so "Dump" can restore it and "Keep" leaves one undo step.
+    // undo stack so "Dump" can return to that exact entry and "Keep" leaves
+    // one undo step.
     current.beginTrajectoryEdit()
+    const original = useStore.getState().undoStack.at(-1)!
     current.replaceTrajectory(processed)
-    return { ...result, preview: true }
+    return { ...result, preview: true, original }
   }
   current.applyProcessedTrajectory(processed)
-  return { ...result, preview: false }
+  return { ...result, preview: false, original: undefined }
 }
