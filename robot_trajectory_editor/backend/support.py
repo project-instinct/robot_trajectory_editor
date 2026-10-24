@@ -30,16 +30,38 @@ def skew(vector):
     return np.array([[0., -z, y], [z, 0., -x], [-y, x, 0.]])
 
 
-def friction_rays(normal, coefficient):
-    """Four generators of a conservative pyramid inside the Coulomb cone."""
+def tangent_basis(normal):
+    """Two orthonormal directions spanning the surface plane of a normal."""
     normal = np.asarray(normal, dtype=float)
     normal = normal / np.linalg.norm(normal)
     axis = np.array([1., 0., 0.]) if abs(normal[2]) > .9 else np.array([0., 0., 1.])
     tangent = cross(normal, axis)
     tangent /= np.linalg.norm(tangent)
-    second = cross(normal, tangent)
+    return np.array([tangent, cross(normal, tangent)])
+
+
+def friction_rays(normal, coefficient, slide=None):
+    """Four generators of a conservative pyramid inside the Coulomb cone.
+
+    A sliding contact (`slide` is its unit slip direction along the surface)
+    carries kinetic friction at the cone's edge against the slip: its four
+    generators are that one force direction.
+    """
+    normal = np.asarray(normal, dtype=float)
+    normal = normal / np.linalg.norm(normal)
+    if slide is not None:
+        return np.repeat((normal - coefficient * np.asarray(slide, dtype=float))[:, None], 4, axis=1)
+    tangent, second = tangent_basis(normal)
     return np.column_stack([normal + coefficient*tangent, normal - coefficient*tangent,
                             normal + coefficient*second, normal - coefficient*second])
+
+
+def at_friction_limit(force, normal, coefficient, share=.98):
+    """Whether a pyramid force uses (almost) all of its static friction."""
+    normal = np.asarray(normal, dtype=float)
+    normal = normal / np.linalg.norm(normal)
+    pressure = float(force @ normal)
+    return pressure > 0 and float(np.abs(tangent_basis(normal) @ force).sum()) >= share * coefficient * pressure
 
 
 class SupportForces:
@@ -85,21 +107,23 @@ class SupportForces:
             saturated = update
         return None
 
-    def solve(self, required, point_maps, normals):
+    def solve(self, required, point_maps, normals, slides=None):
         """Return inverse dynamics minus physically admissible contact forces.
 
         point_maps[k] maps a world force at contact k into generalized forces,
         ordered as the six base forces followed by the joints in the order of
         the effort limits. Actuator bounds participate in force distribution,
         so support that requires excessive joint torque is not treated as
-        dynamically feasible. After the call, `coefficients` holds the weight of
-        each contact's four friction-pyramid rays.
+        dynamically feasible. `slides[k]` is the slip direction of a sliding
+        contact (None for a sticking one). After the call, `coefficients` holds
+        the weight of each contact's four friction-pyramid rays.
         """
         required = np.asarray(required)
         if not len(point_maps):
             self.coefficients = np.empty(0)
             return required.copy(), np.empty((0, 3))
-        rays = [friction_rays(n, self.friction) for n in normals]
+        slides = [None] * len(normals) if slides is None else slides
+        rays = [friction_rays(n, self.friction, slide) for n, slide in zip(normals, slides)]
         contacts = np.hstack([mapping @ ray for mapping, ray in zip(point_maps, rays)])
         self.contacts = contacts
         actuators = np.eye(len(required))[:, 6:]

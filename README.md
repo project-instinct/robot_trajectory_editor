@@ -152,9 +152,10 @@ explained by joint torques within the URDF effort limits (times
 unilateral point support at the terrain. Each support point uses a four-ray
 pyramid inside the Coulomb cone with **terrain friction μ** (API field `friction`,
 default `0.7`). Joint position and velocity limits, valid base orientation and
-non-penetration of the loaded terrain (or the `z=0` ground) are enforced. This is a
-point-support model without a sticking/sliding law. A boundary frame has no
-dynamics constraint of its own, because its velocity is free.
+non-penetration of the loaded terrain (or the `z=0` ground) are enforced. Contacts
+follow Coulomb friction with one coefficient μ for sticking and sliding (see *Stick
+and slip* below). A boundary frame has no dynamics constraint of its own, because
+its velocity is free.
 
 The solver stays close to a *target* prepared from the edited motion, so
 retargeting noise is not reproduced:
@@ -200,6 +201,21 @@ Contacts are inferred from the motion:
   scheduled while it is within reach, so the schedule does not flip on small changes.
 - **Steadiness.** Contacts and breaks in a contact shorter than 0.05 s are removed,
   so feet are not held and released on alternate frames.
+- **Stick and slip.** A support point that is scheduled on three consecutive
+  frames, is on the terrain (within 1 mm) and is moved slower than 0.3 m/s along
+  it by the target is *planted*. A planted point sticks: the material point
+  touching at the middle frame may not move along the surface between the
+  neighbouring frames (central difference, projected onto the tangent plane of the
+  local terrain normal, so slopes, steps and any static mesh work alike), while its
+  force stays inside the static friction pyramid. A rolling body's touching point
+  does not move, so rolling is allowed. A planted point also stays where the
+  target puts it on the surface (1 cm per unit, with the pose term's weight), so
+  closeness is measured where the feet are and not only in joint angles. A
+  sticking point starts to slide only when its force uses all of its static
+  friction and the frame's dynamics still fail: static friction is the limit that
+  stops the slip. A sliding point carries friction at the cone's edge, μ times its
+  normal force, against its slip, and sticks again once it slows below 1 cm/s.
+  Modes are updated after every multiplier update.
 
 ### Solver
 
@@ -240,7 +256,12 @@ only a preview and is never applied without **Keep**.
 
 The float32 trajectory that the editor keeps is checked independently with live
 contacts: every nearest point and support point within 1 mm of the terrain may
-carry support. The checks are base dynamics and actuator effort at every interior
+carry support, under Coulomb friction. A contact whose touching material point
+moves along the surface faster than 1 mm/s (central difference) is sliding and
+may only carry friction at the cone's edge against its slip; a slower one may use
+any force inside the static friction pyramid. The report lists sliding contacts
+(how many frames, fastest one); they are checked through the base dynamics. The
+checks are base dynamics and actuator effort at every interior
 frame, joint position and velocity limits, and non-penetration at every frame and
 at 8 poses per interval (Pinocchio `interpolate`), plus an explicit surface-crossing
 check on loaded meshes. Tolerances: base dynamics 0.1% of robot weight in N (Nm
@@ -287,10 +308,16 @@ In the reference the hands stay 12-17 cm above the floor while the body is
 clearly held up (frames 342-368, centre-of-mass acceleration about -2 m/s²), so
 without inferred support the body would have to fall freely and hit the floor at
 about 2 m/s. With support from the dynamics the hands and then the back carry it.
-With 45 s, 237 of 262 frames before the dive (0-261), 37 of 192 in the dive roll
-(262-453) and 254 of 297 standing frames (454-750) pass every check; the solver adds
-0.25° RMS of 2-10 Hz wobble to the standing part. The endpoints move down by 11 mm
-and 20.5 mm onto the floor instead of forcing a drop and a final hop. The take-off
+With 45 s and `max_effort_scale` 1.2, 143 of 262 frames before the dive (0-261), 2
+of 192 in the dive roll (262-453) and 162 of 297 standing frames (454-750) pass every
+check under the Coulomb validation. Most remaining standing failures are slow creep:
+with a 1 cm/s slip threshold 188, 3 and 196 frames pass. With no-slip the planted
+feet move 6 mm/s (median) and stay 13 mm from the reference foot positions;
+without it the solver slid them at about 100 mm/s, 73 mm away, which the earlier
+slip-blind validation accepted (235, 27 and 266 passing frames). The endpoints move
+down onto the floor instead of forcing a drop and a final hop; because they keep
+their horizontal pose, a foot the solver shifts in the interior has to return to
+the endpoint's position in the last frames. The take-off
 and the dive itself still exceed the waist, hip and knee limits, and the G1
 collision model has no hands, forearms, thighs or shins: hand support is carried by
 the wrist cylinders.

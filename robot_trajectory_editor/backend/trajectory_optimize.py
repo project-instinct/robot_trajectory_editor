@@ -48,7 +48,7 @@ CLEARANCE_TARGET = 5e-5
 # weight. The solver works slightly inside the limits so that the accepted
 # trajectory meets them exactly. Every constraint is a weighted least-squares
 # term whose augmented-Lagrangian multiplier removes the remaining violation.
-SOLVER_SCALE = {"dynamics": 1e-2, "effort": 1., "velocity": 1., "position": 1e-2, "distance": 1e-3}
+SOLVER_SCALE = {"dynamics": 1e-2, "effort": 1., "velocity": 1., "position": 1e-2, "distance": 1e-3, "slip": 1e-2}
 SOLVER_MARGIN = {"effort": 1e-3, "velocity": 1e-3, "position": 1e-5}
 # How freely the linearization lets allocated support follow a step, per
 # squared share of body weight a friction-pyramid ray carries (see terms()).
@@ -78,10 +78,25 @@ SUPPORT_LINK_BAND = .05
 # break in its contact shorter than this is closed, so feet are not held and
 # released on alternate frames.
 SCHEDULE_STEADY = .05
+# Coulomb friction. A support point scheduled on three consecutive frames
+# sticks: the material point touching at the middle frame does not move along
+# the surface (tangent plane of the local terrain normal) between its
+# neighbours, and its force stays inside the static friction cone. It slides
+# only where sticking needs all of the static friction and the frame's
+# dynamics still fail; a sliding point carries friction at the cone's edge
+# against its slip, and sticks again once it has almost stopped. The validator
+# treats a contact creeping slower than SLIP_TOLERANCE (m/s) as sticking and a
+# faster one as sliding with kinetic friction.
+SLIP_TOLERANCE = 1e-3
+SLIDE_STOP = 1e-2
+# Only planted points stick: on the surface (within the contact margin) and
+# slower than PLANTED_SPEED (m/s) along it in the target. Points still being
+# brought to the terrain, or that the target moves faster, are not held.
+PLANTED_SPEED = .3
 # Poses checked between consecutive frames by the validator.
 SUBSAMPLES = 8
 # Distances from the edited trajectory that count as one unit of data error.
-DATA_SCALE = {"base_position": 1e-2, "base_rotation": 2e-2, "joint": 2e-2}
+DATA_SCALE = {"base_position": 1e-2, "base_rotation": 2e-2, "joint": 2e-2, "contact": 1e-2}
 # Acceleration change from the target (m/s^2 or rad/s^2) that counts as one
 # unit of data error. Central differences cannot see a frame-to-frame zigzag in
 # velocity, and a slow 2-10 Hz wobble of a degree costs only a few rad/s^2, so
@@ -91,7 +106,7 @@ ACCELERATION_SCALE = 5.
 # stay close to the target; the others are the augmented-Lagrangian penalty
 # factors of each constraint kind ("middle" is clearance between frames).
 CONSTRAINTS = {"dynamics": False, "effort": True, "position": True, "velocity": True, "contact": True,
-               "clearance": True, "middle": True}  # kind -> is an inequality
+               "clearance": True, "middle": True, "slip": False}  # kind -> is an inequality
 DEFAULT_WEIGHTS = {"data": 1., "acceleration": 1., **dict.fromkeys(CONSTRAINTS, 1.)}
 # Weights of the target terms once the augmented-Lagrangian loop is running.
 # The acceleration term stays at full weight: it is what stops frame-rate
@@ -459,6 +474,38 @@ class RobotModel:
         jac = self.pin.getJointJacobian(self.model, self.data, joint, self.pin.LOCAL_WORLD_ALIGNED)
         return jac[:3] - skew(point - self.data.oMi[joint].translation) @ jac[3:]
 
+    def slip_velocities(self, Q, k, contacts, points, normals, dt, jacobian=False):
+        """Velocity along the surface of the material points touching at frame k.
+
+        Each point is fixed to its geometry's parent joint at frame k and
+        carried to frames k-1 and k+1; its central-difference velocity is
+        projected onto the tangent plane of its terrain normal. A rolling
+        body's touching point has no slip. Returns slips (points x 2) and,
+        with `jacobian`, their derivatives (points x 2 x nv) on frames k-1,
+        k and k+1 (None: the touching point is held fixed on its link). Leaves
+        the kinematics at frame k.
+        """
+        from support import tangent_basis
+        pin, model, data = self.pin, self.model, self.data
+        pin.forwardKinematics(model, data, Q[k])
+        joints = [self.geometry.geometryObjects[int(i)].parentJoint for i in contacts]
+        local = [data.oMi[j].rotation.T @ (np.asarray(p) - data.oMi[j].translation) for j, p in zip(joints, points)]
+        bases = np.array([tangent_basis(n) for n in normals]).reshape(len(points), 2, 3)
+        ends, parts = [], []
+        for frame in (k - 1, k + 1):
+            if jacobian:
+                pin.computeJointJacobians(model, data, Q[frame])
+            else:
+                pin.forwardKinematics(model, data, Q[frame])
+            moved = np.array([data.oMi[j].rotation @ x + data.oMi[j].translation for j, x in zip(joints, local)])
+            ends.append(moved)
+            if jacobian:
+                parts.append(np.array([basis @ self.point_jacobian(i, x)
+                                       for basis, i, x in zip(bases, contacts, moved)]) / (2 * dt))
+        slip = np.einsum("pij,pj->pi", bases, ends[1] - ends[0]) / (2 * dt)
+        pin.computeJointJacobians(model, data, Q[k])
+        return slip, ([-parts[0], None, parts[1]] if jacobian else [None, None, None])
+
     def surface_intersection(self, q):
         """Name of a geometry crossing a mesh terrain surface, or None.
 
@@ -508,6 +555,11 @@ class Problem:
         # frames joined to a hovering fixed pose by a ballistic arc.
         self.schedule = [np.empty(0, dtype=int) for _ in range(self.n)]
         self.airborne = np.zeros(self.n, dtype=bool)
+        # Sliding support points per frame: key -> unit slip direction. All
+        # other scheduled points stick.
+        self.sliding = [{} for _ in range(self.n)]
+        self.planted = [np.empty(0, dtype=int) for _ in range(self.n)]
+        self.planted_target = [np.empty((0, 3)) for _ in range(self.n)]
         # Second differences of the edited trajectory, in each frame's tangent.
         self.reference_curvature = np.zeros((self.n, self.nv))
         for k in range(1, self.n - 1):
@@ -550,7 +602,8 @@ class Problem:
         multipliers = multipliers or {}
         q = Q[k]
         residuals, blocks = [], []
-        stats = {"dynamics": 0., "effort": 0., "clearance": 0., "contact": 0., "position": 0., "velocity": 0.}
+        stats = {"dynamics": 0., "effort": 0., "clearance": 0., "contact": 0., "position": 0., "velocity": 0.,
+                 "slip": 0.}
         values = {}
 
         def add(residual, previous=None, current=None, following=None):
@@ -585,21 +638,25 @@ class Problem:
                 minus_previous = pin.dDifference(model, q, Q[k-1], pin.ArgumentPosition.ARG1)
                 parts = [minus_previous / scale, (plus_q + minus_q) / scale, plus_next / scale]
             add((plus + minus - self.reference_curvature[k]) / scale, *parts)
+        keys = self.schedule[k] if robot.support is not None and interior else ()
+        maps, normals, points, contacts = [], [], [], []
+        if len(keys) and self.free[k-1:k+2].any():
+            _, nearest, outward = robot.distances(q)
+            pin.computeJointJacobians(model, data, q)
+            for key in keys:
+                index, point, _, normal = robot.support_point(key, nearest, outward)
+                maps.append(robot.point_jacobian(index, point).T)
+                normals.append(normal)
+                points.append(point)
+                contacts.append(index)
+            # Material points of the contacts, carried to the neighbours.
+            continuing = np.isin(keys, self.schedule[k-1]) & np.isin(keys, self.schedule[k+1])
+            slip, slip_parts = robot.slip_velocities(Q, k, contacts, points, normals, dt, jacobian)
+            slides = [self.sliding[k].get(int(key)) for key in keys]
         if dynamics and interior and self.free[k-1:k+2].any():
-            keys = self.schedule[k] if robot.support is not None else ()
-            maps, normals, points, contacts = [], [], [], []
-            if len(keys):
-                _, nearest, outward = robot.distances(q)
-                pin.computeJointJacobians(model, data, q)
-                for key in keys:
-                    index, point, _, normal = robot.support_point(key, nearest, outward)
-                    maps.append(robot.point_jacobian(index, point).T)
-                    normals.append(normal)
-                    points.append(point)
-                    contacts.append(index)
             required = pin.rnea(model, data, q, v, a).copy()
             if robot.support is not None:
-                remainder, _ = robot.support.solve(required, maps, normals)
+                remainder, forces = robot.support.solve(required, maps, normals, slides if len(keys) else None)
                 coefficients = robot.support.coefficients
             else:
                 remainder, coefficients = required, np.empty(0)
@@ -624,7 +681,8 @@ class Problem:
                 following = dtau_dv @ plus_next / (2*dt) + mass @ plus_next / dt**2
                 active = coefficients > 1e-12
                 if active.any():
-                    current = current - self.contact_force_derivative(q, contacts, points, normals, coefficients)
+                    current = current - self.contact_force_derivative(q, contacts, points, normals, coefficients,
+                                                                      slides)
                 # Gauss-Newton over the configurations and the active ray
                 # weights, with the weight changes eliminated. They are
                 # damped relative to the weights themselves, which stands in
@@ -639,6 +697,39 @@ class Problem:
                     projection -= span @ np.linalg.solve(gram, span.T)
                 parts = [factor[:, None] * (projection @ part[rows]) for part in (previous, current, following)]
             add(np.r_[base, effort], *parts)
+            if len(keys):
+                # What the stick/slip update needs: each point's force and
+                # slip, and whether the frame's dynamics hold.
+                values["support"] = (np.asarray(keys), forces, np.array(normals), slip, continuing,
+                                     stats["dynamics"] <= .5 * robot.tolerances["dynamics"])
+        if len(keys) and self.free[k-1:k+2].any():
+            # Sticking points do not slip along the surface.
+            sticking = continuing & np.array([slide is None for slide in slides]) & np.isin(keys, self.planted[k])
+            planted = np.isin(keys, self.planted[k])
+            if planted.any() and self.free[k]:
+                # Closeness where it matters for contacts: a planted point
+                # stays where the target puts it on the surface, not only
+                # near the target's joint angles.
+                # The point's motion is that of the material point (exact
+                # unless the geometry rolls).
+                from support import tangent_basis
+                chosen = np.flatnonzero(planted)
+                target = self.planted_target[k][np.searchsorted(self.planted[k], np.asarray(keys)[chosen])]
+                bases = [tangent_basis(normals[i]) for i in chosen]
+                scale = DATA_SCALE["contact"] / np.sqrt(weights["data"])
+                part = None
+                if jacobian:
+                    part = np.vstack([basis @ robot.point_jacobian(contacts[i], points[i])
+                                      for basis, i in zip(bases, chosen)]) / scale
+                values["contact_position"] = 2 * len(chosen)
+                add(np.concatenate([basis @ (points[i] - x) for basis, i, x in zip(bases, chosen, target)]) / scale,
+                    current=part)
+            if sticking.any():
+                stats["slip"] = float(np.linalg.norm(slip[sticking], axis=1).max())
+                _, residual, factor = constrain("slip", slip[sticking].ravel() / SOLVER_SCALE["slip"], False)
+                parts = [None if part is None else part[sticking].reshape(-1, nv) * (factor / SOLVER_SCALE["slip"])
+                         for part in slip_parts]
+                add(residual, *parts)
 
         if self.free[k]:
             self.geometry_terms(q, k, add, constrain, stats, jacobian)
@@ -739,14 +830,14 @@ class Problem:
                 part = -np.array([outward[i] @ robot.point_jacobian(i, nearest[i]) for i in hit]) * (factor / scale)
             add(residual, current=part)
 
-    def contact_force_derivative(self, q, contacts, points, normals, coefficients):
+    def contact_force_derivative(self, q, contacts, points, normals, coefficients, slides):
         """Derivative of the support's generalized force with the allocated
         world forces held fixed and the contact points carried by their links."""
         from support import friction_rays
         pin, robot = self.robot.pin, self.robot
         groups = {}
-        for i, (index, point, normal) in enumerate(zip(contacts, points, normals)):
-            force = friction_rays(normal, robot.support.friction) @ coefficients[4*i:4*i+4]
+        for i, (index, point, normal, slide) in enumerate(zip(contacts, points, normals, slides)):
+            force = friction_rays(normal, robot.support.friction, slide) @ coefficients[4*i:4*i+4]
             if not np.any(force):
                 continue
             joint = robot.geometry.geometryObjects[int(index)].parentJoint
@@ -801,11 +892,14 @@ def frame_equations(problem, frames, terms):
 
 
 def _evaluate_frames(args):
-    Q, frames, jacobian, weights, multipliers, schedule, dynamics = args
+    Q, frames, jacobian, weights, multipliers, schedule, sliding, dynamics = args
     problem = _WORKER["problem"]
-    # The schedule is refreshed during the solve; forked workers get it here.
-    for k, keys in zip(frames, schedule):
-        problem.schedule[k] = keys
+    # The schedule and the stick/slip modes are refreshed during the solve;
+    # forked workers get them here (with each frame's neighbours).
+    for k, keys, modes in zip(range(frames[0] - 1, frames[-1] + 2), schedule, sliding):
+        if 0 <= k < problem.n:
+            problem.schedule[k] = keys
+            problem.sliding[k], problem.planted[k], problem.planted_target[k] = modes
     terms = [problem.terms(Q, k, jacobian, weights, None if multipliers is None else multipliers[i], dynamics)
              for i, k in enumerate(frames)]
     cost = sum(float(r @ r) for r, _, _, _ in terms)
@@ -878,10 +972,13 @@ class Evaluator:
     def evaluate(self, Q, jacobian, weights=None, multipliers=None, dynamics=True):
         """Evaluate every frame. `multipliers` is a per-frame list of
         per-kind arrays, or None."""
-        schedule = self.problem.schedule
-        return Evaluation(self.problem, self.map(_evaluate_frames, [
+        problem = self.problem
+
+        def around(values, chunk):
+            return [values[k] if 0 <= k < problem.n else None for k in range(chunk[0] - 1, chunk[-1] + 2)]
+        return Evaluation(problem, self.map(_evaluate_frames, [
             (Q, chunk, jacobian, weights, None if multipliers is None else [multipliers[k] for k in chunk],
-             [schedule[k] for k in chunk], dynamics)
+             around(problem.schedule, chunk), around(list(zip(problem.sliding, problem.planted, problem.planted_target)), chunk), dynamics)
             for chunk in self.chunks]))
 
     def validate(self, Q):
@@ -947,7 +1044,7 @@ def feasible_in_model(stats, tolerances):
     worst = {name: max(s[name] for s in stats) for name in stats[0]}
     return (worst["dynamics"] <= .5 * tolerances["dynamics"] and worst["effort"] <= .5 * tolerances["effort"]
             and worst["clearance"] <= .5 * tolerances["clearance"] and worst["position"] <= 0.
-            and worst["velocity"] <= 0. and worst["contact"] <= 0.)
+            and worst["velocity"] <= 0. and worst["contact"] <= 0. and worst["slip"] <= .5 * SLIP_TOLERANCE)
 
 
 def levenberg_marquardt(problem, Q, evaluate, stop, accept=None, patience=3):
@@ -1069,16 +1166,90 @@ def optimize(problem, Q, evaluator, stop, validate):
             return Q, iterations, None, validated["result"]
         if perf_counter() >= stop:
             return Q, iterations, "time budget exhausted", None
-        previous = update_multipliers(evaluator.evaluate(Q, False, weights, multipliers), multipliers, weights,
-                                      previous)
+        evaluation = evaluator.evaluate(Q, False, weights, multipliers)
+        previous = update_multipliers(evaluation, multipliers, weights, previous)
         if problem.robot.support is not None:
+            for k in update_sliding(problem, evaluation.values):
+                multipliers[k].pop("slip", None)
             # Contact timing may move with the motion (an earlier touchdown,
             # a later lift-off): read the schedule again from the current
             # trajectory, and restart the multipliers of frames that changed.
             for k, keys in enumerate(infer_schedule(problem, Q, problem.schedule)):
                 if not np.array_equal(keys, problem.schedule[k]):
                     problem.schedule[k] = keys
+                    problem.sliding[k] = {key: d for key, d in problem.sliding[k].items() if key in set(keys.tolist())}
                     multipliers[k].pop("contact", None)
+                    for frame in (k - 1, k, k + 1):
+                        if 0 <= frame < problem.n:
+                            multipliers[frame].pop("slip", None)
+            for k in update_planted(problem, Q):
+                multipliers[k].pop("slip", None)
+
+
+def update_planted(problem, Q):
+    """Scheduled points that stick at each frame: continuing contacts on the
+    surface in Q whose touching material point the target keeps (nearly)
+    still, with where the target puts them. Returns the frames whose planted
+    points changed."""
+    robot = problem.robot
+    changed = []
+    for k in range(1, problem.n - 1):
+        keys = problem.schedule[k]
+        keys = keys[np.isin(keys, problem.schedule[k-1]) & np.isin(keys, problem.schedule[k+1])]
+        planted = np.empty(0, dtype=int)
+        if len(keys) and problem.free[k-1:k+2].any():
+            gaps, kept = [], []
+            for frames in (Q, problem.reference):
+                _, nearest, outward = robot.distances(frames[k])
+                support = [robot.support_point(key, nearest, outward) for key in keys]
+                gaps.append(np.array([gap for _, _, gap, _ in support]))
+                kept.append(support)
+            support = kept[1]
+            slip, _ = robot.slip_velocities(problem.reference, k, [i for i, _, _, _ in support],
+                                            [x for _, x, _, _ in support], [n for _, _, _, n in support], problem.dt)
+            chosen = (gaps[0] <= CONTACT_MARGIN) & (np.linalg.norm(slip, axis=1) < PLANTED_SPEED)
+            planted = keys[chosen]
+            problem.planted_target[k] = np.array([x for (_, x, _, _), on in zip(support, chosen) if on]).reshape(-1, 3)
+        else:
+            problem.planted_target[k] = np.empty((0, 3))
+        if not np.array_equal(planted, problem.planted[k]):
+            changed.append(k)
+        problem.planted[k] = planted
+    return changed
+
+
+def update_sliding(problem, values):
+    """Coulomb stick/slip update of the scheduled support points.
+
+    From one evaluation's per-frame support values: a sticking point whose
+    force uses all of its static friction, on a frame whose dynamics still
+    fail, starts to slide against that friction (static friction cannot stop
+    it); a sliding point that has almost stopped sticks again. Returns the
+    frames whose sliding points changed.
+    """
+    from support import at_friction_limit, tangent_basis
+    friction = problem.robot.support.friction
+    changed = []
+    for k, frame_values in enumerate(values):
+        modes = {}
+        support = frame_values.get("support")
+        if support is not None:
+            for key, force, normal, slip, continuing in zip(*support[:5]):
+                key = int(key)
+                if not continuing:
+                    continue
+                if key in problem.sliding[k]:
+                    speed = float(np.linalg.norm(slip))
+                    if speed >= SLIDE_STOP:
+                        modes[key] = tangent_basis(normal).T @ slip / speed
+                elif not support[5] and at_friction_limit(force, normal, friction):
+                    unit = normal / np.linalg.norm(normal)
+                    tangential = force - (force @ unit) * unit
+                    modes[key] = -tangential / np.linalg.norm(tangential)
+        if modes.keys() != problem.sliding[k].keys():
+            changed.append(k)
+        problem.sliding[k] = modes
+    return changed
 
 
 def validate_frame(problem, Q, k):
@@ -1089,8 +1260,8 @@ def validate_frame(problem, Q, k):
     """
     robot, pin = problem.robot, problem.robot.pin
     q = Q[k]
-    errors = dict.fromkeys(TOLERANCES, 0.)
-    where = dict.fromkeys(TOLERANCES, "")
+    errors = dict(dict.fromkeys(TOLERANCES, 0.), sliding=0.)
+    where = dict(dict.fromkeys(TOLERANCES, ""), sliding="")
     message = None
     x = q[robot.joint_q]
     beyond = np.maximum(x - robot.upper, robot.lower - x)
@@ -1120,16 +1291,32 @@ def validate_frame(problem, Q, k):
             # robot surface within the contact margin.
             distance, nearest, outward = robot.distances(q, cull=CONTACT_MARGIN)
             pin.computeJointJacobians(robot.model, robot.data, q)
-            maps, normals = [], []
+            maps, normals, points, contacts = [], [], [], []
             for index in np.flatnonzero(distance <= CONTACT_MARGIN):
-                maps.append(robot.point_jacobian(index, nearest[index]).T)
-                normals.append(outward[index])
+                candidates = [(nearest[index], outward[index])]
                 for key in robot.support_keys(index, nearest, outward):
                     _, point, gap, normal = robot.support_point(key, nearest, outward)
                     if gap <= CONTACT_MARGIN:
-                        maps.append(robot.point_jacobian(index, point).T)
-                        normals.append(normal)
-            remainder, _ = robot.support.solve(required, maps, normals)
+                        candidates.append((point, normal))
+                for point, normal in candidates:
+                    maps.append(robot.point_jacobian(index, point).T)
+                    normals.append(normal)
+                    points.append(point)
+                    contacts.append(index)
+            # Coulomb friction: a contact whose touching material point moves
+            # along the surface slides, with friction at the cone's edge
+            # against the slip; a slower one sticks inside the cone.
+            slides = []
+            if contacts:
+                from support import tangent_basis
+                slip, _ = robot.slip_velocities(Q, k, contacts, points, normals, problem.dt)
+                for index, s, normal in zip(contacts, slip, normals):
+                    speed = float(np.linalg.norm(s))
+                    slides.append(tangent_basis(normal).T @ s / speed if speed > SLIP_TOLERANCE else None)
+                    if speed > SLIP_TOLERANCE and speed > errors["sliding"]:
+                        errors["sliding"] = speed
+                        where["sliding"] = robot.geometry.geometryObjects[int(index)].name
+            remainder, _ = robot.support.solve(required, maps, normals, slides)
         axis = int(np.argmax(np.abs(remainder[:6])))
         errors["dynamics"] = float(np.abs(remainder[axis]))
         where["dynamics"] = "unsupported base force" if axis < 3 else "unsupported base moment"
@@ -1180,7 +1367,11 @@ def validate(problem, Q, evaluator):
                  f"(tolerance {f['tolerance']:g})")
     if crossing is not None:
         worst = f"{crossing}; {worst}" if worst else crossing
-    return residuals, worst, {"order": failing, "checks": findings, "crossing": crossing}
+    speeds = np.array([errors["sliding"] for errors, _, _ in results])
+    fastest = int(speeds.argmax())
+    sliding = {"value": float(speeds[fastest]), "frame": fastest, "where": results[fastest][1]["sliding"],
+               "frames": int(np.sum(speeds > 0))}
+    return residuals, worst, {"order": failing, "checks": findings, "crossing": crossing, "sliding": sliding}
 
 
 def format_report(result, summary, context):
@@ -1203,6 +1394,12 @@ def format_report(result, summary, context):
     passed = [name for name in TOLERANCES if not checks[name]["frames_over"]]
     if passed:
         lines.append("Within tolerance: " + ", ".join(f"{name} {checks[name]['value']:.3g}" for name in passed))
+    sliding = summary.get("sliding")
+    if sliding and sliding["frames"]:
+        lines.append(f"Sliding contacts (kinetic friction, checked in dynamics): {sliding['frames']} frames, fastest "
+                     f"{sliding['value']:.3g} m/s at frame {sliding['frame']} ({sliding['where']})")
+    else:
+        lines.append(f"Sliding contacts: none (contacts slower than {SLIP_TOLERANCE:g} m/s stick)")
     return "\n".join(lines)
 
 
@@ -1266,6 +1463,7 @@ def initialize(problem):
         Q[k][2] += offset[k]
     problem.airborne = airborne
     problem.schedule = infer_schedule(problem, Q)
+    update_planted(problem, Q)
     return Q
 
 

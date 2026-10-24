@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from trajectory_optimize import (CONTACT_MARGIN, Evaluation, Problem, RobotModel, TrajectoryOptimizeError,
                                  frame_equations, infer_schedule, initialize, optimize_trajectory, read_trajectory,
                                  repair_glitches, smooth_target, solve_normal_equations, update_multipliers,
-                                 validate_frame)
+                                 update_sliding, validate_frame)
 
 
 def motion(heights, rate=10., joints=None):
@@ -152,7 +152,8 @@ def test_static_hover_with_every_frame_fixed_fails_with_preview_and_report(spher
     assert report[1] == "Motion: 4 frames at 10 fps, 0 joints; keyframes: frames 0, 1, 2, 3"
     violation = next(line for line in report if line.strip().startswith("dynamics"))
     assert "9.81" in violation and "N" in violation and "frame 1" in violation and "over tolerance in 2 frames" in violation
-    assert report[-1].startswith("Within tolerance: effort 0")
+    assert report[-2].startswith("Within tolerance: effort 0")
+    assert report[-1].startswith("Sliding contacts: none")
 
 
 def test_validated_run_reports_every_check_within_tolerance(sphere_urdf):
@@ -248,8 +249,10 @@ def test_residual_jacobian_matches_finite_differences(articulated_urdf, friction
     Q = np.array([robot.pin.integrate(robot.model, base, rng.normal(size=7) * 1e-3) for _ in range(5)])
     problem = Problem(robot, Q.copy(), [0, 4], 1/30)
     initialize(problem)
+    slipping = 0
     for k in (1, 2, 3):
-        residual, block, _, _ = problem.terms(Q, k, True)
+        residual, block, _, values = problem.terms(Q, k, True)
+        slipping += len(values.get("slip", ()))
         step = rng.normal(size=(3, 7)) * 1e-7
         moved = Q.copy()
         for i, frame in enumerate((k - 1, k, k + 1)):
@@ -261,10 +264,14 @@ def test_residual_jacobian_matches_finite_differences(articulated_urdf, friction
         assert len(changed) == len(residual)
         rows = np.ones(len(residual), dtype=bool)
         if friction is not None:
-            # Dynamics rows follow the acceleration rows of an interior frame.
-            rows[7:13] = False
+            # Dynamics rows follow the acceleration rows of an interior frame,
+            # then the planted points' positions: their Jacobian follows the
+            # material point, while a sphere's lowest point rolls.
+            rows[7:13 + values.get("contact_position", 0)] = False
         np.testing.assert_allclose((changed - residual)[rows], (block @ step.ravel())[rows],
                                    atol=1e-3 * np.abs(changed - residual).max() + 1e-9)
+    # With support, the resting spheres' no-slip rows are among those checked.
+    assert slipping > 0 if friction is not None else slipping == 0
 
 
 def test_block_solver_matches_dense_solve(sphere_urdf):
@@ -386,3 +393,55 @@ def test_tilted_endpoint_is_lowered_without_penetrating(articulated_urdf):
     last = result["trajectory"]
     q = robot.configuration(last["base_pos_w"][-1], last["base_quat_w"][-1], last["joint_pos"][-1])
     assert robot.distances(q)[0].min() >= -1e-5
+
+
+def gliding(n, speed, rate=30.):
+    """A resting sphere translated along x at constant speed without turning."""
+    return {"framerate": rate, "joint_names": [], "joint_pos": [[]] * n,
+            "base_pos_w": [[speed * k / rate, 0., .1005] for k in range(n)], "base_quat_w": [[1., 0., 0., 0.]] * n}
+
+
+def test_validator_gives_a_gliding_contact_only_kinetic_friction(sphere_urdf):
+    # Gliding at constant speed on a resting contact: kinetic friction acts
+    # against the slip and nothing balances it (with a sticking contact the
+    # weight alone would be supported exactly).
+    result = optimize_trajectory(gliding(10, .3), list(range(10)), sphere_urdf, friction=.7)
+    assert not result["success"]
+    assert result["residuals"]["dynamics"] > 4.
+    assert "Sliding contacts (kinetic friction, checked in dynamics): 8 frames, fastest 0.3 m/s" in result["report"]
+
+
+def test_resting_contact_that_skates_in_the_target_sticks(sphere_urdf):
+    # The target skates 1.5 cm forth and back on a resting sphere. A planted
+    # contact may not slide, so the sphere rolls or stays put instead.
+    n, rate = 30, 30.
+    data = gliding(n, 0., rate)
+    for k in range(n):
+        data["base_pos_w"][k][0] = .015 * np.sin(np.pi * k / (n - 1))
+    result = optimize_trajectory(data, [], sphere_urdf, friction=.7)
+    assert result["success"], result.get("report")
+    assert "Sliding contacts: none" in result["report"]
+
+
+def test_static_friction_is_the_limit_that_stops_slipping(sphere_urdf):
+    robot = RobotModel(sphere_urdf, [], None, lambda _: None, friction=.5)
+    problem = Problem(robot, np.array([robot.configuration([0., 0., .1], [1., 0., 0., 0.], [])] * 3), [], 1 / 30)
+    up, still = np.array([[0., 0., 1.]]), np.zeros((1, 2))
+
+    def values(force, balanced, slip=still):
+        return [{}, {"support": (np.array([7]), np.array([force]), up, slip, np.array([True]), balanced)}, {}]
+    # Inside the cone, or failing dynamics but with friction to spare: sticks.
+    assert update_sliding(problem, values([1., 0., 10.], True)) == [] and problem.sliding[1] == {}
+    update_sliding(problem, values([3., 0., 10.], False))
+    assert problem.sliding[1] == {}
+    # All static friction used and the frame still fails: slides against it.
+    assert update_sliding(problem, values([5., 0., 10.], True)) == []
+    assert update_sliding(problem, values([5., 0., 10.], False)) == [1]
+    np.testing.assert_allclose(problem.sliding[1][7], [-1., 0., 0.])
+    # It keeps sliding while it moves, and sticks again once almost stopped.
+    from support import tangent_basis
+    moving = (tangent_basis(up[0]) @ np.array([-.2, 0., 0.]))[None]
+    assert update_sliding(problem, values([5., 0., 10.], True, moving)) == []
+    np.testing.assert_allclose(problem.sliding[1][7], [-1., 0., 0.], atol=1e-12)
+    assert update_sliding(problem, values([5., 0., 10.], True, moving * 1e-2)) == [1]
+    assert problem.sliding[1] == {}
