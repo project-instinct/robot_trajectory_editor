@@ -25,7 +25,7 @@ function App() {
   const [rightWidth, setRightWidth] = useState(280)
   const resizeRef = useRef<{ side: 'left' | 'right'; startX: number; startWidth: number } | null>(null)
   const {
-    trajectory, trajectoryVersion, currentFrame, pinnedLinks,
+    trajectory, trajectoryVersion, currentFrame, pinnedLinks, isPlaying,
     setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, undo,
   } = useStore()
 
@@ -84,6 +84,7 @@ function App() {
   // (Re)load the robot only when the URDF source changes, not on trajectory load.
   useEffect(() => {
     let cancelled = false
+    setRobotModelLoaded(false)
     getRobotUrdfUrl(urdfRelPath).then(url => {
       const loader = new URDFLoader()
       loader.packages = (pkg: string) => getAssetUrl(pkg)
@@ -120,12 +121,13 @@ function App() {
   }, [trajectory])
 
   // Pose the robot from the current frame on any trajectory/frame change.
+  // During playback the player draws the in-between pose itself.
   useEffect(() => {
     const vp = viewportInstance.current
-    if (!vp?.robotModel || trajectory.frameCount === 0) return
+    if (isPlaying || !vp?.robotModel || trajectory.frameCount === 0) return
     const frame = trajectory.getFrame(currentFrame)
     vp.robotModel.applyFrame(frame.jointPos, frame.basePoseW, frame.baseQuatW)
-  }, [trajectory, trajectoryVersion, currentFrame])
+  }, [trajectory, trajectoryVersion, currentFrame, isPlaying])
 
   // Reflect pin state in the robot model.
   useEffect(() => {
@@ -242,7 +244,7 @@ function App() {
           />
           <TargetPanel />
           <TransformPanel />
-          <OpsPanel />
+          <OpsPanel urdfPath={urdfRelPath} />
         </div>
         <div style={handleStyle} onPointerDown={startResize('left')} />
         <div style={viewportWrapperStyle}>

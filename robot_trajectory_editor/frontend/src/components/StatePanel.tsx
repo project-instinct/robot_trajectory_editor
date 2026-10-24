@@ -67,7 +67,7 @@ export function StatePanel() {
         <p style={{ color: '#888', fontSize: '12px' }}>No trajectory loaded.</p>
       ) : (
       <>
-      <p>Frame: {currentFrame} / {Math.max(trajectory.frameCount - 1, 0)}</p>
+      <p>Frame: {currentFrame} / {Math.max(trajectory.frameCount - 1, 0)} · {trajectory.framerate.toFixed(trajectory.framerate % 1 ? 2 : 0)} fps</p>
       <h4>Joints</h4>
       {trajectory.jointNames.map((name, i) => {
         const limit = robotModel?.getJointLimit(name)

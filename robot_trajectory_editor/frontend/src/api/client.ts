@@ -108,3 +108,55 @@ export async function downloadTrajectory(payload: TrajectoryJSON, fileName: stri
   anchor.click()
   URL.revokeObjectURL(url)
 }
+
+export interface TrajectoryOptimizeResult {
+  trajectory: TrajectoryJSON
+  residuals: Record<string, number>
+  tolerances: Record<string, number>
+  validation_samples_per_interval: number
+  iterations: number
+  friction?: number
+  max_effort_scale?: number
+  smoothing_hz?: number
+  glitch_speed_scale?: number
+  repaired_joint_samples?: number
+  seconds?: number
+  success?: boolean
+  error?: string
+  /** Plain-text summary of the run, meant to be copied verbatim. */
+  report?: string
+}
+
+/** User parameters of one Trajectory Optimize request. */
+export interface TrajectoryOptimizeOptions {
+  /** Terrain friction coefficient μ. */
+  friction: number
+  /** Multiplier on the URDF actuator effort limits (at least 1). */
+  maxEffortScale: number
+  /** Low-pass cutoff of the target motion in Hz; 0 keeps every frame's detail. */
+  smoothingHz: number
+  /** Joint jumps faster than this multiple of the URDF velocity limit are repaired; 0 disables. */
+  glitchSpeedScale: number
+}
+
+export const DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS: TrajectoryOptimizeOptions = {
+  friction: 0.7, maxEffortScale: 1, smoothingHz: 8, glitchSpeedScale: 1,
+}
+
+export async function optimizeTrajectory(
+  trajectory: TrajectoryJSON, keyframes: number[], terrainObj: string | null,
+  urdfPath?: string, options: TrajectoryOptimizeOptions = DEFAULT_TRAJECTORY_OPTIMIZE_OPTIONS,
+): Promise<TrajectoryOptimizeResult> {
+  const response = await fetch(`${BASE}/trajectory/optimize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      trajectory, keyframes, terrain_obj: terrainObj, urdf_path: urdfPath,
+      friction: options.friction, max_effort_scale: options.maxEffortScale,
+      smoothing_hz: options.smoothingHz, glitch_speed_scale: options.glitchSpeedScale,
+    }),
+  })
+  const result = await response.json()
+  if (!response.ok && !result.trajectory) throw new Error(result.error || 'Trajectory Optimize failed')
+  return result
+}

@@ -1,13 +1,16 @@
 import argparse
 import glob
 import io
+import math
 import os
 import tempfile
 import shutil
 import sys
+import threading
 
 from flask import Flask, request, jsonify, send_file, abort
 from npz_io import parse_npz, serialize_npz
+from trajectory_optimize import TrajectoryOptimizeError, optimize_trajectory
 
 app = Flask(__name__)
 
@@ -15,6 +18,10 @@ ROBOT_URDF_PATH: str | None = None
 UPLOADED_ROBOT_DIR: str | None = None
 CURRENT_URDF_REL: str | None = None
 NUDGE_STEP: float = 0.01
+# One Trajectory Optimize at a time: each run forks a worker pool and sets the
+# process-wide BLAS thread limit, which overlapping runs in the threaded
+# server would fight over (and forking beside a running solve can deadlock).
+OPTIMIZE_LOCK = threading.Lock()
 FRAME_STEP: int = 1
 
 
@@ -236,6 +243,46 @@ def parse_trajectory_endpoint():
         return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/trajectory/optimize", methods=["POST"])
+def optimize_trajectory_endpoint():
+    payload = request.get_json()
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Trajectory Optimize requires a JSON object."}), 400
+    root = _current_urdf_dir()
+    relative = payload.get("urdf_path")
+    if relative is not None:
+        if not isinstance(relative, str) or not root:
+            return jsonify({"error": "No robot directory is loaded."}), 400
+        path = os.path.abspath(os.path.join(root, relative))
+        if not _is_within(path, [os.path.abspath(root)]) or not os.path.isfile(path):
+            return jsonify({"error": "Selected robot URDF is unavailable."}), 400
+    elif ROBOT_URDF_PATH and os.path.isfile(ROBOT_URDF_PATH):
+        path = ROBOT_URDF_PATH
+    else:
+        return jsonify({"error": "Select a robot URDF before Trajectory Optimize."}), 400
+    try:
+        terrain = payload.get("terrain_obj")
+        if terrain is not None and not isinstance(terrain, str):
+            raise TrajectoryOptimizeError("Terrain must be OBJ text or null for the default ground.")
+        friction = payload.get("friction", 0.7)
+        if type(friction) not in (int, float) or not math.isfinite(friction) or friction < 0:
+            raise TrajectoryOptimizeError("Terrain friction must be a finite nonnegative number.")
+        max_effort_scale = payload.get("max_effort_scale", 1.0)
+        if type(max_effort_scale) not in (int, float) or not math.isfinite(max_effort_scale) or max_effort_scale < 1.0:
+            raise TrajectoryOptimizeError("max_effort_scale must be a finite number at least 1.")
+        options = {key: payload[key] for key in ("smoothing_hz", "glitch_speed_scale") if key in payload}
+        with OPTIMIZE_LOCK:
+            result = optimize_trajectory(payload["trajectory"], payload.get("keyframes", []),
+                                        path, terrain, resolve_mesh_path, friction=friction,
+                                        max_effort_scale=max_effort_scale, **options)
+        return jsonify(result), (200 if result.get("success", True) else 422)
+    except (TrajectoryOptimizeError, KeyError, TypeError, ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 422
+    except Exception as error:
+        app.logger.exception("Trajectory Optimize failed")
+        return jsonify({"error": f"Trajectory Optimize failed: {error}"}), 500
 
 
 @app.route("/api/trajectory/serialize", methods=["POST"])
