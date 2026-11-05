@@ -15,7 +15,7 @@ export function HelpModal({ onClose }: HelpModalProps) {
             <Item>Load Trajectory: open a <code>.npz</code> trajectory file.</Item>
             <Item>Save Trajectory: open a file-location dialog and save the current trajectory as <code>.npz</code>. You can also press Ctrl+S / Cmd+S.</Item>
             <Item>Load Terrain / Save Terrain: load (<code>.obj</code>/<code>.stl</code>) or export the terrain mesh.</Item>
-            <Item>Edit Terrain: open a pop-up to crop, down-sample, move, and rotate the terrain.</Item>
+            <Item>Edit Terrain: open a pop-up to crop, down-sample, scale about the world origin, move, and rotate the terrain.</Item>
             <Item>Load Robot URDF: upload a robot package when no URDF is provided at launch.</Item>
           </Section>
           <Section title="Edit Target (left panel)">
