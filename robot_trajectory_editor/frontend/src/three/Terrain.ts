@@ -105,6 +105,22 @@ export function downsampleTerrain(group: THREE.Group, ratio: number): void {
   })
 }
 
+/**
+ * Scales all terrain vertices uniformly about the world origin. Transforms are
+ * baked first, so a terrain that was already moved/rotated scales about (0,0,0)
+ * instead of its own pivot.
+ */
+export function scaleTerrain(group: THREE.Group, factor: number): void {
+  bakeTerrainTransform(group)
+  const matrix = new THREE.Matrix4().makeScale(factor, factor, factor)
+  group.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const mesh = obj as THREE.Mesh
+    mesh.geometry.applyMatrix4(matrix)
+    mesh.geometry.computeVertexNormals()
+  })
+}
+
 /** Exports the terrain in world coordinates (transforms baked in). */
 export function exportTerrainObj(group: THREE.Group): string {
   group.updateMatrixWorld(true)

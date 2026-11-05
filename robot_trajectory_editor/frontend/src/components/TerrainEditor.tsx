@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { cropTerrain, downsampleTerrain, bakeTerrainTransform } from '../three/Terrain'
+import { cropTerrain, downsampleTerrain, scaleTerrain, bakeTerrainTransform } from '../three/Terrain'
 
 interface TerrainEditorProps {
   terrain: THREE.Group | null
@@ -32,6 +32,7 @@ export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
   const [cropMin, setCropMin] = useState<[number, number, number]>([bbox.min.x, bbox.min.y, bbox.min.z])
   const [cropMax, setCropMax] = useState<[number, number, number]>([bbox.max.x, bbox.max.y, bbox.max.z])
   const [ratio, setRatio] = useState(0.5)
+  const [scaleFactor, setScaleFactor] = useState(1)
 
   const handleCrop = () => {
     if (!editable) return
@@ -44,6 +45,11 @@ export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
   const handleDownsample = () => {
     if (!editable) return
     downsampleTerrain(editable, ratio)
+  }
+
+  const handleScale = () => {
+    if (!editable || !(scaleFactor > 0)) return
+    scaleTerrain(editable, scaleFactor)
   }
 
   const handleApply = () => {
@@ -101,8 +107,20 @@ export function TerrainEditor({ terrain, onClose }: TerrainEditorProps) {
             />
             <button onClick={handleDownsample}>Downsample</button>
           </div>
+          <div>
+            <div>Scale about origin (factor):</div>
+            <input
+              type="number"
+              step={0.1}
+              min={0}
+              value={scaleFactor}
+              onChange={(e) => setScaleFactor(parseFloat(e.target.value) || 0)}
+              style={{ width: '70px', fontSize: '11px' }}
+            />
+            <button style={{ marginLeft: '4px' }} onClick={handleScale}>Scale</button>
+          </div>
           <div style={{ color: '#888' }}>
-            Drag gizmo to move/rotate terrain (T = translate, R = rotate). Right-drag to orbit.
+            Drag gizmo to move/rotate terrain (T = translate, R = rotate). "Scale" applies the factor about the world origin. Right-drag to orbit.
           </div>
         </div>
       </div>

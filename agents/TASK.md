@@ -45,7 +45,7 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
     - A "Save Trajectory" button allows users to save the current trajectory to a `.npz` file. (prompt the use to select a file path)
 
-    - A "Edit Terrain" button allows the user to edit the terrain mesh in a pop-up window. The user can crop, down-sample, move, and rotate the terrain mesh. If the window is closed, the terrain mesh will be updated in the main window.
+    - A "Edit Terrain" button allows the user to edit the terrain mesh in a pop-up window. The user can crop, down-sample, scale (w.r.t the origin), move, and rotate the terrain mesh. If the window is closed, the terrain mesh will be updated in the main window.
 
     - A "Save Terrain" button allows users to save the current terrain mesh to a `.obj` file.
 
