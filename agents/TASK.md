@@ -37,6 +37,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
         - If a folder is selected, please select all files ends with `.npz` in the folder, and load them one by one.
 
+        - After loading multiple files, the list box should be drag-able to make the list box larger or smaller, both in wdith and height.
+
     - A "Load Terrain" button allows users to load a terrain file in `.obj` format. The terrain mesh file has the same coordinate system as the robot trajectory, and the robot will be placed on the terrain when the trajectory is played.
 
         - Only one terrain mesh can be loaded at a time. If a new terrain mesh is loaded, the previous one will be replaced.
@@ -131,6 +133,8 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 - On the right, there is a panel for displaying the current robot state, including joint positions, base position, and base orientation. Users can also manually input values to update the robot state.
 
     - All three section should have a name, a scroll bar, and a text box for the exact value, for each aspect of the state. The scroll bar and text box should be synchronized, and changing one should update the other.
+
+    - If no trajectory file is loaded, it should also display the current robot state value (base pose and joint positions) that matches the 3D scene in realtime.
 
     - By draging the scroll bar, the user can change the value of the selected target in the current frame. The text box should also be updated accordingly.
 
