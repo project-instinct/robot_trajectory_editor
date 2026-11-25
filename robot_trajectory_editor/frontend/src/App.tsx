@@ -22,8 +22,10 @@ function App() {
   const [showTerrainEditor, setShowTerrainEditor] = useState(false)
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
   const [leftWidth, setLeftWidth] = useState(280)
+  const [trajectoryListPanelWidth, setTrajectoryListPanelWidth] = useState(0)
   const [rightWidth, setRightWidth] = useState(280)
   const resizeRef = useRef<{ side: 'left' | 'right'; startX: number; startWidth: number } | null>(null)
+  const effectiveLeftWidth = Math.max(leftWidth, trajectoryListPanelWidth)
   const {
     trajectory, trajectoryVersion, currentFrame, pinnedLinks, isPlaying,
     setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, undo,
@@ -38,7 +40,7 @@ function App() {
     // cursor (drag right = left panel wider, right panel narrower).
     const delta = drag.side === 'left' ? e.clientX - drag.startX : drag.startX - e.clientX
     const width = drag.startWidth + delta
-    if (drag.side === 'left') setLeftWidth(Math.min(420, Math.max(200, width)))
+    if (drag.side === 'left') setLeftWidth(Math.min(760, Math.max(200, width)))
     else setRightWidth(Math.min(520, Math.max(200, width)))
   }, [])
 
@@ -52,10 +54,12 @@ function App() {
   const startResize = useCallback((side: 'left' | 'right') => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     document.body.style.userSelect = 'none'
-    resizeRef.current = { side, startX: e.clientX, startWidth: side === 'left' ? leftWidth : rightWidth }
+    const startWidth = side === 'left' ? effectiveLeftWidth : rightWidth
+    if (side === 'left') setTrajectoryListPanelWidth(0)
+    resizeRef.current = { side, startX: e.clientX, startWidth }
     window.addEventListener('pointermove', handleResizeMove)
     window.addEventListener('pointerup', endResize)
-  }, [leftWidth, rightWidth, handleResizeMove, endResize])
+  }, [effectiveLeftWidth, rightWidth, handleResizeMove, endResize])
 
   // Pull launch-time config (e.g. arrow-key nudge/frame steps) from the backend.
   useEffect(() => {
@@ -235,12 +239,13 @@ function App() {
   return (
     <div style={rootStyle}>
       <div style={mainRow}>
-        <div style={{ ...leftPanelStyle, width: leftWidth }}>
+        <div style={{ ...leftPanelStyle, width: effectiveLeftWidth }}>
           <LeftPanel
             onLoadTerrain={handleLoadTerrain}
             terrain={terrain}
             onEditTerrain={() => setShowTerrainEditor(true)}
             onRobotUploaded={setUrdfRelPath}
+            onTrajectoryListWidthChange={setTrajectoryListPanelWidth}
           />
           <TargetPanel />
           <TransformPanel />
@@ -287,7 +292,7 @@ const mainRow: React.CSSProperties = {
 const leftPanelStyle: React.CSSProperties = {
   background: '#1a1a2e',
   borderRight: '1px solid #333',
-  overflowX: 'hidden',
+  overflowX: 'auto',
   overflowY: 'auto',
   scrollbarGutter: 'stable',
   flexShrink: 0,

@@ -3,6 +3,14 @@ import { Trajectory } from '../state/Trajectory'
 import { parseTrajectory, saveTrajectoryFile, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
 import { loadTerrain, exportTerrainObj } from '../three/Terrain'
 import { HelpModal } from './HelpModal'
+import {
+  resizeTrajectoryListBox,
+  TRAJECTORY_LIST_MAX_HEIGHT,
+  TRAJECTORY_LIST_MAX_WIDTH,
+  TRAJECTORY_LIST_PANEL_CHROME,
+  type TrajectoryListResizeAxis,
+  type TrajectoryListSize,
+} from './trajectoryListResize'
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 
@@ -11,6 +19,7 @@ interface LeftPanelProps {
   terrain: THREE.Group | null
   onEditTerrain: () => void
   onRobotUploaded: (urdfPath?: string) => void
+  onTrajectoryListWidthChange?: (requiredPanelWidth: number) => void
 }
 
 interface LoadedTrajectory {
@@ -20,10 +29,11 @@ interface LoadedTrajectory {
   trajectory: Trajectory
 }
 
-export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUploaded }: LeftPanelProps) {
+export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUploaded, onTrajectoryListWidthChange }: LeftPanelProps) {
   const { setTrajectory, trajectory, setTrajectorySourceName } = useStore()
   const [loadedTrajectories, setLoadedTrajectories] = useState<LoadedTrajectory[]>([])
   const [selectedTrajectoryIndex, setSelectedTrajectoryIndex] = useState(0)
+  const [listSize, setListSize] = useState<{ width: number | null; height: number | null }>({ width: null, height: null })
   const [showRobotSelect, setShowRobotSelect] = useState(false)
   const [urdfList, setUrdfList] = useState<{ path: string; name: string }[]>([])
   const [selectedUrdf, setSelectedUrdf] = useState('')
@@ -34,6 +44,8 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const trajectoryFolderRef = useRef<HTMLInputElement>(null)
   const terrainInputRef = useRef<HTMLInputElement>(null)
   const robotFolderRef = useRef<HTMLInputElement>(null)
+  const trajectoryListRef = useRef<HTMLDivElement>(null)
+  const listResizeCleanupRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     for (const input of [trajectoryFolderRef.current, robotFolderRef.current]) {
@@ -46,6 +58,63 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   useEffect(() => {
     getRobotInfo().then(info => setShowRobotSelect(!info.has_urdf))
   }, [])
+
+  useEffect(() => {
+    if (loadedTrajectories.length <= 1) {
+      onTrajectoryListWidthChange?.(0)
+    }
+  }, [loadedTrajectories.length, onTrajectoryListWidthChange])
+
+  useEffect(() => () => {
+    listResizeCleanupRef.current?.()
+  }, [])
+
+  const startListResize = (axis: TrajectoryListResizeAxis) => (e: React.PointerEvent<HTMLDivElement>) => {
+    const box = trajectoryListRef.current
+    if (!box) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    listResizeCleanupRef.current?.()
+    const rect = box.getBoundingClientRect()
+    const start: TrajectoryListSize = { width: rect.width, height: rect.height }
+    const startX = e.clientX
+    const startY = e.clientY
+    const maxWidth = Math.min(TRAJECTORY_LIST_MAX_WIDTH, window.innerWidth - 360)
+    const maxHeight = Math.min(TRAJECTORY_LIST_MAX_HEIGHT, window.innerHeight - 200)
+    document.body.style.userSelect = 'none'
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const next = resizeTrajectoryListBox(
+        start,
+        moveEvent.clientX - startX,
+        moveEvent.clientY - startY,
+        axis,
+        maxWidth,
+        maxHeight,
+      )
+      setListSize(prev => ({
+        width: axis === 'y' ? prev.width : next.width,
+        height: axis === 'x' ? prev.height : next.height,
+      }))
+      if (axis !== 'y') {
+        onTrajectoryListWidthChange?.(next.width + TRAJECTORY_LIST_PANEL_CHROME)
+      }
+    }
+
+    const cleanup = () => {
+      document.body.style.userSelect = ''
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', cleanup)
+      window.removeEventListener('pointercancel', cleanup)
+      listResizeCleanupRef.current = null
+    }
+
+    listResizeCleanupRef.current = cleanup
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', cleanup)
+    window.addEventListener('pointercancel', cleanup)
+  }
 
   const loadTrajectoryFiles = async (files: File[]) => {
     const npzFiles = files.filter(file => file.name.toLowerCase().endsWith('.npz'))
@@ -173,19 +242,42 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       <button onClick={() => fileInputRef.current?.click()}>Load Trajectory</button>
       <button onClick={() => trajectoryFolderRef.current?.click()}>Load Trajectory Folder</button>
       {loadedTrajectories.length > 1 && (
-        <div style={trajectoryListStyle}>
-          <span style={{ fontSize: '11px', color: '#88aacc' }}>Loaded trajectories:</span>
+        <div
+          ref={trajectoryListRef}
+          style={{
+            ...trajectoryListStyle,
+            width: listSize.width !== null ? `${listSize.width}px` : '100%',
+            height: listSize.height !== null ? `${listSize.height}px` : undefined,
+          }}
+        >
+          <span style={{ fontSize: '11px', color: '#88aacc', flexShrink: 0 }}>Loaded trajectories:</span>
           <select
             aria-label="Loaded trajectories"
             value={selectedTrajectoryIndex}
             onChange={handleTrajectorySelect}
             size={Math.min(loadedTrajectories.length, 6)}
-            style={{ width: '100%' }}
+            style={{ width: '100%', flex: 1, minHeight: 0 }}
           >
             {loadedTrajectories.map((entry, index) => (
               <option key={`${entry.name}-${index}`} value={index}>{entry.name}</option>
             ))}
           </select>
+          <div
+            aria-label="Resize trajectory list width"
+            onPointerDown={startListResize('x')}
+            style={listRightHandleStyle}
+          />
+          <div
+            aria-label="Resize trajectory list height"
+            onPointerDown={startListResize('y')}
+            style={listBottomHandleStyle}
+          />
+          <div
+            aria-label="Resize trajectory list"
+            title="Drag to resize width and height"
+            onPointerDown={startListResize('xy')}
+            style={listCornerHandleStyle}
+          />
         </div>
       )}
       <button onClick={handleSaveTrajectory}>Save Trajectory</button>
@@ -237,10 +329,45 @@ const panelStyle: React.CSSProperties = {
 }
 
 const trajectoryListStyle: React.CSSProperties = {
+  position: 'relative',
   display: 'flex',
   flexDirection: 'column',
   gap: '4px',
-  padding: '6px',
+  padding: '6px 10px 10px 6px',
   background: '#2a2a4e',
   borderRadius: '4px',
+  flexShrink: 0,
+}
+
+const listRightHandleStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  right: 0,
+  bottom: '12px',
+  width: '6px',
+  cursor: 'ew-resize',
+  touchAction: 'none',
+}
+
+const listBottomHandleStyle: React.CSSProperties = {
+  position: 'absolute',
+  left: 0,
+  right: '12px',
+  bottom: 0,
+  height: '6px',
+  cursor: 'ns-resize',
+  touchAction: 'none',
+}
+
+const listCornerHandleStyle: React.CSSProperties = {
+  position: 'absolute',
+  right: '2px',
+  bottom: '2px',
+  width: '12px',
+  height: '12px',
+  cursor: 'nwse-resize',
+  touchAction: 'none',
+  background: 'repeating-linear-gradient(-45deg, transparent 0 2px, #88aacc 2px 3.5px)',
+  clipPath: 'polygon(100% 0, 100% 100%, 0 100%)',
+  opacity: 0.75,
 }
