@@ -144,7 +144,8 @@ export class DragController {
     const dragging = this.gizmoDragging()
     this.viewport.controls.enabled = !dragging
     if (dragging && !this.gizmoEditStarted) {
-      useStore.getState().beginTrajectoryEdit()
+      const store = useStore.getState()
+      if (store.trajectory.frameCount > 0) store.beginTrajectoryEdit()
       this.gizmoEditStarted = true
     } else if (!dragging) {
       this.translateGizmo.enabled = true
@@ -157,8 +158,7 @@ export class DragController {
   private onGizmoObjectChange = (): void => {
     if (!this.gizmoDragging() || !this.robot || !this.ikSolver || !this.selectedLinkName) return
     const store = useStore.getState()
-    const { trajectory, currentFrame, pinnedLinks } = store
-    if (trajectory.frameCount === 0) return
+    const { pinnedLinks } = store
 
     const target = {
       pos: this.gizmoTarget.position.clone(),
@@ -180,11 +180,7 @@ export class DragController {
       basePos = new THREE.Vector3()
       baseQuat = new THREE.Quaternion()
       solvedBase.decompose(basePos, baseQuat, new THREE.Vector3())
-      trajectory.setBasePose(
-        currentFrame,
-        [basePos.x, basePos.y, basePos.z],
-        [baseQuat.w, baseQuat.x, baseQuat.y, baseQuat.z],
-      )
+      this.writeBasePose(basePos, baseQuat)
     } else if (!this.ikSolver.hasLink(this.selectedLinkName)) {
       return
     }
@@ -216,9 +212,7 @@ export class DragController {
       })
     }
 
-    store.touchTrajectory()
-    const frame = trajectory.getFrame(currentFrame)
-    this.robot.applyFrame(frame.jointPos, frame.basePoseW, frame.baseQuatW)
+    this.commitPoseEdit()
   }
 
   private setPointer(event: MouseEvent): void {
@@ -237,6 +231,12 @@ export class DragController {
 
   private frameBase(): { pos: THREE.Vector3; quat: THREE.Quaternion } {
     const { trajectory, currentFrame } = useStore.getState()
+    if (trajectory.frameCount === 0 && this.robot) {
+      return {
+        pos: this.robot.rootGroup.position.clone(),
+        quat: this.robot.rootGroup.quaternion.clone(),
+      }
+    }
     const frame = trajectory.getFrame(currentFrame)
     const pos = new THREE.Vector3(frame.basePoseW[0], frame.basePoseW[1], frame.basePoseW[2])
     const quat = new THREE.Quaternion(frame.baseQuatW[1], frame.baseQuatW[2], frame.baseQuatW[3], frame.baseQuatW[0])
@@ -245,21 +245,49 @@ export class DragController {
 
   private frameJointMap(): Map<string, number> {
     const { trajectory, currentFrame } = useStore.getState()
+    if (!this.robot) return new Map()
+    if (trajectory.frameCount === 0) return this.robot.getJointValueMap()
     const frame = trajectory.getFrame(currentFrame)
     const map = new Map<string, number>()
-    if (!this.robot) return map
     for (const [name, info] of this.robot.jointMap) {
       map.set(name, frame.jointPos[info.index] ?? 0)
     }
     return map
   }
 
+  private writeBasePose(pos: THREE.Vector3, quat: THREE.Quaternion): void {
+    const { trajectory, currentFrame } = useStore.getState()
+    const p = [pos.x, pos.y, pos.z]
+    const q = [quat.w, quat.x, quat.y, quat.z]
+    if (trajectory.frameCount > 0) {
+      trajectory.setBasePose(currentFrame, p, q)
+    } else {
+      this.robot?.setBasePose(p, q)
+    }
+  }
+
   private writeSolvedJoints(solved: Map<string, number>): void {
     const { trajectory, currentFrame } = useStore.getState()
     if (!this.robot) return
+    if (trajectory.frameCount === 0) {
+      this.robot.setJointValues(solved)
+      return
+    }
     for (const [name, value] of solved) {
       const info = this.robot.jointMap.get(name)
       if (info) trajectory.setJointValue(currentFrame, info.index, value)
+    }
+  }
+
+  private commitPoseEdit(): void {
+    if (!this.robot) return
+    const store = useStore.getState()
+    if (store.trajectory.frameCount > 0) {
+      store.touchTrajectory()
+      const frame = store.trajectory.getFrame(store.currentFrame)
+      this.robot.applyFrame(frame.jointPos, frame.basePoseW, frame.baseQuatW)
+    } else {
+      store.touchRobotPose()
     }
   }
 
@@ -278,7 +306,6 @@ export class DragController {
     // Let either transform-control layer own pointer gestures over its handles.
     if (this.translateGizmo.axis || this.rotateGizmo.axis) return
     const store = useStore.getState()
-    if (store.trajectory.frameCount === 0) return
 
     const hit = this.raycastRobot(event)
     if (!hit) return
@@ -384,14 +411,13 @@ export class DragController {
     this.dirty = false
 
     const store = useStore.getState()
-    const { trajectory, currentFrame, pinnedLinks } = store
-    if (trajectory.frameCount === 0) return
+    const { trajectory, pinnedLinks } = store
 
     // Delay undo capture until a click has actually become a drag. A plain
     // selection click must not create an empty undo entry.
     if (!this.pointerMoved) return
     if (!this.gizmoEditStarted) {
-      store.beginTrajectoryEdit()
+      if (trajectory.frameCount > 0) store.beginTrajectoryEdit()
       this.gizmoEditStarted = true
     }
 
@@ -408,7 +434,7 @@ export class DragController {
         newPos = this.pendingPoint.clone().add(this.grabOffset)
         newQuat = this.startBaseQuat.clone()
       }
-      trajectory.setBasePose(currentFrame, [newPos.x, newPos.y, newPos.z], [newQuat.w, newQuat.x, newQuat.y, newQuat.z])
+      this.writeBasePose(newPos, newQuat)
 
       if (pinnedLinks.length > 0 && this.ikSolver) {
         this.ikSolver.setConfiguration(newPos, newQuat, this.frameJointMap())
@@ -429,9 +455,7 @@ export class DragController {
       }
     }
 
-    store.touchTrajectory()
-    const frame = trajectory.getFrame(currentFrame)
-    this.robot.applyFrame(frame.jointPos, frame.basePoseW, frame.baseQuatW)
+    this.commitPoseEdit()
   }
 
   dispose(): void {

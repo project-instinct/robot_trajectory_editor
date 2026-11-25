@@ -1,4 +1,5 @@
 import { useStore } from '../state/store'
+import { eulerToQuat, quatToEuler } from '../state/Trajectory'
 import { useCallback } from 'react'
 import { getViewport } from '../three/viewportContext'
 
@@ -11,42 +12,73 @@ const EULER_RANGES: [number, number][] = [
 ]
 
 export function StatePanel() {
-  const { trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, robotModelLoaded } = useStore()
-  const frame = trajectory.getFrame(currentFrame)
-  // Reading limits imperatively; robotModelLoaded subscription triggers re-render on robot load.
+  const {
+    trajectory, trajectoryVersion, currentFrame, beginTrajectoryEdit,
+    touchTrajectory, robotModelLoaded, robotPoseVersion, touchRobotPose,
+  } = useStore()
+  // Subscriptions trigger re-renders on in-place trajectory edits, robot load,
+  // and direct 3D scene pose changes when no trajectory is loaded.
+  void trajectoryVersion
   void robotModelLoaded
-  const robotModel = getViewport()?.robotModel ?? null
+  void robotPoseVersion
 
-  const handleJointChange = useCallback((index: number, value: number) => {
+  const robotModel = getViewport()?.robotModel ?? null
+  const hasTrajectory = trajectory.frameCount > 0
+  const sceneState = !hasTrajectory && robotModel ? robotModel.getSceneState() : null
+  const frame = hasTrajectory ? trajectory.getFrame(currentFrame) : sceneState
+  const jointNames = hasTrajectory ? trajectory.jointNames : (sceneState?.jointNames ?? [])
+
+  const handleJointChange = useCallback((index: number, name: string, value: number) => {
     if (isNaN(value)) return
-    beginTrajectoryEdit()
-    trajectory.setJointValue(currentFrame, index, value)
-    touchTrajectory()
-  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory])
+    if (hasTrajectory) {
+      beginTrajectoryEdit()
+      trajectory.setJointValue(currentFrame, index, value)
+      touchTrajectory()
+    } else if (robotModel) {
+      robotModel.setJointValue(name, value)
+      touchRobotPose()
+    }
+  }, [hasTrajectory, trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, robotModel, touchRobotPose])
 
   const handleBasePosChange = useCallback((axis: number, value: number) => {
-    if (isNaN(value)) return
-    beginTrajectoryEdit()
+    if (isNaN(value) || !frame) return
     const newPos = new Float32Array(frame.basePoseW)
     newPos[axis] = value
-    trajectory.setBasePose(currentFrame, newPos, frame.baseQuatW)
-    touchTrajectory()
-  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, frame])
+    if (hasTrajectory) {
+      beginTrajectoryEdit()
+      trajectory.setBasePose(currentFrame, newPos, frame.baseQuatW)
+      touchTrajectory()
+    } else if (robotModel) {
+      robotModel.setBasePose(newPos, frame.baseQuatW)
+      touchRobotPose()
+    }
+  }, [hasTrajectory, trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, frame, robotModel, touchRobotPose])
 
   const handleBaseQuatChange = useCallback((axis: number, value: number) => {
-    if (isNaN(value)) return
-    beginTrajectoryEdit()
-    const [roll, pitch, yaw] = trajectory.getQuatEuler(currentFrame)
+    if (isNaN(value) || !frame) return
+    const [roll, pitch, yaw] = hasTrajectory
+      ? trajectory.getQuatEuler(currentFrame)
+      : quatToEuler(frame.baseQuatW[0], frame.baseQuatW[1], frame.baseQuatW[2], frame.baseQuatW[3])
     const r = axis === 0 ? value : roll
     const p = axis === 1 ? value : pitch
     const ya = axis === 2 ? value : yaw
-    trajectory.setQuatEuler(currentFrame, r, p, ya)
-    touchTrajectory()
-  }, [trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory])
+    if (hasTrajectory) {
+      beginTrajectoryEdit()
+      trajectory.setQuatEuler(currentFrame, r, p, ya)
+      touchTrajectory()
+    } else if (robotModel) {
+      robotModel.setBasePose(frame.basePoseW, eulerToQuat(r, p, ya))
+      touchRobotPose()
+    }
+  }, [hasTrajectory, trajectory, currentFrame, beginTrajectoryEdit, touchTrajectory, frame, robotModel, touchRobotPose])
 
   /** Slider range covering the whole base-position sequence on an axis, so the
    *  current frame's value is always reachable with room to adjust. */
   const basePosRange = (axis: number): [number, number] => {
+    if (!hasTrajectory) {
+      const v = frame?.basePoseW[axis] ?? 0
+      return [Math.min(-5, v - 1), Math.max(5, v + 1)]
+    }
     let lo = Infinity
     let hi = -Infinity
     for (let f = 0; f < trajectory.frameCount; f++) {
@@ -63,19 +95,23 @@ export function StatePanel() {
   return (
     <div style={panelStyle}>
       <h3>Robot State</h3>
-      {trajectory.frameCount === 0 ? (
-        <p style={{ color: '#888', fontSize: '12px' }}>No trajectory loaded.</p>
+      {!frame ? (
+        <p style={{ color: '#888', fontSize: '12px' }}>No robot or trajectory loaded.</p>
       ) : (
       <>
-      <p>Frame: {currentFrame} / {Math.max(trajectory.frameCount - 1, 0)} · {trajectory.framerate.toFixed(trajectory.framerate % 1 ? 2 : 0)} fps</p>
+      {hasTrajectory ? (
+        <p>Frame: {currentFrame} / {Math.max(trajectory.frameCount - 1, 0)} · {trajectory.framerate.toFixed(trajectory.framerate % 1 ? 2 : 0)} fps</p>
+      ) : (
+        <p style={{ color: '#88aacc', fontSize: '11px' }}>No trajectory loaded (live 3D scene)</p>
+      )}
       <h4>Joints</h4>
-      {trajectory.jointNames.map((name, i) => {
+      {jointNames.map((name, i) => {
         const limit = robotModel?.getJointLimit(name)
         const lower = limit?.lower ?? -Math.PI
         const upper = limit?.upper ?? Math.PI
         const step = (upper - lower) / 200 || 0.01
         return (
-          <div key={i} style={rowStyle}>
+          <div key={name} style={rowStyle}>
             <span style={jointNameStyle}>{name}</span>
             <input
               type="range"
@@ -83,13 +119,13 @@ export function StatePanel() {
               max={upper}
               step={step}
               value={frame.jointPos[i]}
-              onChange={e => handleJointChange(i, parseFloat(e.target.value))}
+              onChange={e => handleJointChange(i, name, parseFloat(e.target.value))}
               style={sliderStyle}
             />
             <input
               type="number"
               value={frame.jointPos[i]}
-              onChange={e => handleJointChange(i, parseFloat(e.target.value))}
+              onChange={e => handleJointChange(i, name, parseFloat(e.target.value))}
               style={jointValueStyle}
               step={0.01}
             />
@@ -123,7 +159,9 @@ export function StatePanel() {
       })}
       <h4>Base Orientation (roll/pitch/yaw)</h4>
       {(() => {
-        const [roll, pitch, yaw] = trajectory.getQuatEuler(currentFrame)
+        const [roll, pitch, yaw] = hasTrajectory
+          ? trajectory.getQuatEuler(currentFrame)
+          : quatToEuler(frame.baseQuatW[0], frame.baseQuatW[1], frame.baseQuatW[2], frame.baseQuatW[3])
         const euler = [roll, pitch, yaw]
         return ['roll', 'pitch', 'yaw'].map((label, i) => {
           const [lo, hi] = EULER_RANGES[i]

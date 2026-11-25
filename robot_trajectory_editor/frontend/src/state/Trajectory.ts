@@ -1,6 +1,6 @@
 export type ChannelKind = { kind: 'joint'; index: number } | { kind: 'basePos'; axis: number } | { kind: 'baseQuat'; axis: number }
 
-function quatToEuler(w: number, x: number, y: number, z: number): [number, number, number] {
+export function quatToEuler(w: number, x: number, y: number, z: number): [number, number, number] {
   const sinr_cosp = 2 * (w * x + y * z)
   const cosr_cosp = 1 - 2 * (x * x + y * y)
   const roll = Math.atan2(sinr_cosp, cosr_cosp)
@@ -50,7 +50,7 @@ function mulQuats(
   ]
 }
 
-function eulerToQuat(roll: number, pitch: number, yaw: number): [number, number, number, number] {
+export function eulerToQuat(roll: number, pitch: number, yaw: number): [number, number, number, number] {
   const cr = Math.cos(roll * 0.5)
   const sr = Math.sin(roll * 0.5)
   const cp = Math.cos(pitch * 0.5)

@@ -13,6 +13,34 @@ interface UrdfLinkObject extends THREE.Object3D {
   isURDFLink?: boolean
 }
 
+interface UrdfJointObject extends THREE.Object3D {
+  jointType?: string
+  angle?: number
+  jointValue?: number[]
+  limit?: { lower: number; upper: number }
+}
+
+export interface RobotSceneState {
+  jointNames: string[]
+  jointPos: Float32Array
+  basePoseW: Float32Array
+  baseQuatW: Float32Array
+}
+
+function readUrdfJointValue(joint: UrdfJointObject): number {
+  if (typeof joint.angle === 'number' && Number.isFinite(joint.angle)) return joint.angle
+  const first = joint.jointValue?.[0]
+  return typeof first === 'number' && Number.isFinite(first) ? first : 0
+}
+
+function resolveJointLimit(limit?: { lower: number; upper: number }): { lower: number; upper: number } {
+  const valid = limit !== undefined
+    && Number.isFinite(limit.lower)
+    && Number.isFinite(limit.upper)
+    && limit.upper > limit.lower
+  return valid ? { lower: limit.lower, upper: limit.upper } : { lower: -Math.PI, upper: Math.PI }
+}
+
 /** Finds the enclosing URDF link object for any descendant (mesh, visual, ...). */
 export function findLinkAncestor(obj: THREE.Object3D): THREE.Object3D | null {
   let cur: THREE.Object3D | null = obj
@@ -52,20 +80,24 @@ export class RobotModel {
     this.bindJoints(jointNames)
   }
 
+  private getUrdfJoints(): Record<string, UrdfJointObject> {
+    return (this.urdfRobot as unknown as { joints?: Record<string, UrdfJointObject> }).joints ?? {}
+  }
+
   /** (Re)binds trajectory joint names to URDF joints (called on trajectory load). */
   bindJoints(jointNames: string[]): void {
     this.jointMap.clear()
-    const urdfJoints = (this.urdfRobot as unknown as { joints?: Record<string, THREE.Object3D> }).joints ?? {}
+    const urdfJoints = this.getUrdfJoints()
     jointNames.forEach((name, idx) => {
       const urdfJoint = urdfJoints[name]
       if (!urdfJoint) return
-      const limit = (urdfJoint as unknown as { limit?: { lower: number; upper: number } }).limit
+      const { lower, upper } = resolveJointLimit(urdfJoint.limit)
       this.jointMap.set(name, {
         urdfJoint,
         name,
         index: idx,
-        lower: limit?.lower ?? -Math.PI,
-        upper: limit?.upper ?? Math.PI,
+        lower,
+        upper,
       })
     })
     if (jointNames.length > 0) {
@@ -81,7 +113,77 @@ export class RobotModel {
 
   getJointLimit(name: string): { lower: number; upper: number } | null {
     const b = this.jointMap.get(name)
-    return b ? { lower: b.lower, upper: b.upper } : null
+    if (b) return { lower: b.lower, upper: b.upper }
+    const urdfJoint = this.getUrdfJoints()[name]
+    return urdfJoint ? resolveJointLimit(urdfJoint.limit) : null
+  }
+
+  /** Movable (non-fixed) URDF joint names in model order. */
+  getMovableJointNames(): string[] {
+    return Object.entries(this.getUrdfJoints())
+      .filter(([, joint]) => joint.jointType !== 'fixed')
+      .map(([name]) => name)
+  }
+
+  /** Live joint values from the 3D scene keyed by URDF joint name. */
+  getJointValueMap(): Map<string, number> {
+    const map = new Map<string, number>()
+    const urdfJoints = this.getUrdfJoints()
+    for (const [name, joint] of Object.entries(urdfJoints)) {
+      if (joint.jointType === 'fixed') continue
+      map.set(name, readUrdfJointValue(joint))
+    }
+    return map
+  }
+
+  /** Current base pose (xyz + wxyz) and movable joint values directly from the 3D scene. */
+  getSceneState(): RobotSceneState {
+    const urdfJoints = this.getUrdfJoints()
+    const jointNames = this.getMovableJointNames()
+    const jointPos = new Float32Array(jointNames.length)
+    for (let i = 0; i < jointNames.length; i++) {
+      jointPos[i] = readUrdfJointValue(urdfJoints[jointNames[i]])
+    }
+    const p = this.rootGroup.position
+    const q = this.rootGroup.quaternion
+    return {
+      jointNames,
+      jointPos,
+      basePoseW: new Float32Array([p.x, p.y, p.z]),
+      baseQuatW: new Float32Array([q.w, q.x, q.y, q.z]),
+    }
+  }
+
+  /** Sets a single URDF joint value directly in the 3D scene. */
+  setJointValue(name: string, value: number): void {
+    if (!Number.isFinite(value)) return
+    ;(this.urdfRobot as unknown as { setJointValue: (n: string, v: number) => void })
+      .setJointValue(name, value)
+    this.rootGroup.updateMatrixWorld()
+  }
+
+  /** Sets multiple URDF joint values directly in the 3D scene. */
+  setJointValues(values: Map<string, number>): void {
+    const setter = this.urdfRobot as unknown as { setJointValue: (n: string, v: number) => void }
+    for (const [name, value] of values) {
+      if (Number.isFinite(value)) setter.setJointValue(name, value)
+    }
+    this.rootGroup.updateMatrixWorld()
+  }
+
+  /** Sets the robot base pose (xyz + wxyz) directly in the 3D scene. */
+  setBasePose(basePos: Float32Array | number[], baseQuat: Float32Array | number[]): void {
+    const baseOk = [basePos[0], basePos[1], basePos[2], baseQuat[0], baseQuat[1], baseQuat[2], baseQuat[3]]
+      .every(Number.isFinite)
+    if (!baseOk) return
+    this.rootGroup.position.set(basePos[0], basePos[1], basePos[2])
+    const n = Math.hypot(baseQuat[0], baseQuat[1], baseQuat[2], baseQuat[3])
+    if (n > 1e-6) {
+      this.rootGroup.quaternion.set(baseQuat[1] / n, baseQuat[2] / n, baseQuat[3] / n, baseQuat[0] / n)
+    } else {
+      this.rootGroup.quaternion.identity()
+    }
+    this.rootGroup.updateMatrixWorld()
   }
 
   /** Links available as Cartesian interpolation targets. */

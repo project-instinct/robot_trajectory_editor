@@ -25,6 +25,8 @@ export interface StoreState {
   isPlaying: boolean
   pinnedLinks: string[]
   robotModelLoaded: boolean
+  /** Bumped whenever the 3D robot pose is edited directly without a loaded trajectory. */
+  robotPoseVersion: number
   /** Value step applied by the Up/Down arrow keys (from backend /api/config). */
   nudgeStep: number
   /** Frame step applied by the Left/Right arrow keys (from backend /api/config). */
@@ -67,6 +69,8 @@ export interface StoreState {
   togglePinnedLink: (name: string) => void
   clearPinnedLinks: () => void
   setRobotModelLoaded: (l: boolean) => void
+  /** Notify that the 3D robot pose was updated directly (no trajectory loaded). */
+  touchRobotPose: () => void
   setNudgeStep: (step: number) => void
   /** Move the selected channel's value at the current frame by ±nudgeStep. */
   nudgeSelectedChannel: (direction: 1 | -1) => void
@@ -103,6 +107,7 @@ export const useStore = create<StoreState>((set, get) => ({
   isPlaying: false,
   pinnedLinks: [],
   robotModelLoaded: false,
+  robotPoseVersion: 0,
   nudgeStep: 0.01,
   frameStep: 1,
   baseTransform: null,
@@ -201,6 +206,7 @@ export const useStore = create<StoreState>((set, get) => ({
   })),
   clearPinnedLinks: () => set({ pinnedLinks: [] }),
   setRobotModelLoaded: (l) => set({ robotModelLoaded: l }),
+  touchRobotPose: () => set(s => ({ robotPoseVersion: s.robotPoseVersion + 1 })),
   setNudgeStep: (step) => set({ nudgeStep: step }),
 
   nudgeSelectedChannel: (direction) => {
