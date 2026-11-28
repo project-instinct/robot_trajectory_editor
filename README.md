@@ -16,8 +16,32 @@ Teaser: ![teaser](media/teaser.gif)
 
 ## Quick Start
 
+### Install once, launch from anywhere (recommended)
+
 ```bash
-# Launch both backend + frontend (prompts to install missing Python/npm dependencies)
+# Build the frontend bundle once
+(cd robot_trajectory_editor/frontend && npm install && npm run build)
+
+# Install the package into your Python / conda environment
+pip install -e .
+```
+
+Then launch from any directory:
+
+```bash
+python -m robot_trajectory_editor.launch [--robot-urdf /path/to/robot.urdf] [--port 5000]
+# or with conda run:
+conda run -n <env> --no-capture-output python -m robot_trajectory_editor.launch --robot-urdf /path/to/robot.urdf
+# or via the installed console script:
+robot-trajectory-editor --robot-urdf /path/to/robot.urdf
+```
+
+Then open http://localhost:5000. Both `--robot-urdf` and `--robot_urdf_path` are accepted, and `package://<python_pkg>/<relpath>` URDF paths are resolved against installed Python packages. Pass `--dev` to run the Vite dev server on `:5173` alongside Flask instead of serving `frontend/dist/`.
+
+### Dev script (`launch.sh`)
+
+```bash
+# Launch both backend + Vite frontend (prompts to install missing Python/npm dependencies)
 ./launch.sh [--robot-urdf /path/to/robot.urdf] [--port 5000] [--nudge-step 0.01] [--frame-step 1]
 ```
 

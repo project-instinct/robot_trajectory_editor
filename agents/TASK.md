@@ -190,16 +190,18 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - Please use common libraries for 3D visualization (e.g., Three.js, Babylon.js) to render the robot and terrain in the main window.
 
-- If the CLI launch command provides a robot urdf path, the urdf path could be as follows:
+- The package is installable via `pip install -e .` (exposing `python -m robot_trajectory_editor.launch` and the `robot-trajectory-editor` CLI command) so it can be launched from any working directory (e.g. `conda run -n <env> --no-capture-output python -m robot_trajectory_editor.launch ...`). By default, Flask serves the built frontend (`robot_trajectory_editor/frontend/dist/`) on a single port (`--port`, default `5000`); passing `--dev` runs the Vite dev server alongside Flask.
+
+- If the CLI launch command provides a robot urdf path (via `--robot-urdf` or `--robot_urdf_path`), the urdf path could be as follows:
 
 ```
-python3 -m agents.robot_trajectory_editor --robot_urdf_path /path/to/robot.urdf
+python -m robot_trajectory_editor.launch --robot-urdf /path/to/robot.urdf
 ```
 
-which means the path is a local file path, or 
+which means the path is a local file path, or
 
 ```
-python3 -m agents.robot_trajectory_editor --robot_urdf_path package://robot_description/urdf/robot.urdf
-``` 
+python -m robot_trajectory_editor.launch --robot-urdf package://robot_description/urdf/robot.urdf
+```
 
-which means the path is a python package path, where `robot_description` is the name of the package, and `urdf/robot.urdf` is the relative path to the urdf file in the package.
+which means the path is a python package path, where `robot_description` is the name of the package, and `urdf/robot.urdf` is the relative path to the urdf file in the package. (`--robot_urdf_path` is accepted as an alias for `--robot-urdf`.)

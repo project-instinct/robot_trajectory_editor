@@ -1,5 +1,6 @@
 import argparse
 import glob
+import importlib.util
 import io
 import math
 import os
@@ -8,7 +9,7 @@ import shutil
 import sys
 import threading
 
-from flask import Flask, request, jsonify, send_file, abort
+from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from npz_io import parse_npz, serialize_npz
 from trajectory_optimize import TrajectoryOptimizeError, optimize_trajectory
 
@@ -17,6 +18,7 @@ app = Flask(__name__)
 ROBOT_URDF_PATH: str | None = None
 UPLOADED_ROBOT_DIR: str | None = None
 CURRENT_URDF_REL: str | None = None
+FRONTEND_DIST_DIR: str | None = None
 NUDGE_STEP: float = 0.01
 # One Trajectory Optimize at a time: each run forks a worker pool and sets the
 # process-wide BLAS thread limit, which overlapping runs in the threaded
@@ -66,7 +68,56 @@ def _safe_upload_relative_path(filename: str) -> str:
     return normalized
 
 
+def resolve_package_uri(uri: str) -> str | None:
+    """Resolve package://<python_pkg>/<relpath> to an existing local file, or None."""
+    if not uri.startswith("package://"):
+        return None
+    rest = uri[len("package://"):]
+    pkg_name, sep, rel_path = rest.partition("/")
+    if not pkg_name or not sep or not rel_path:
+        return None
+    try:
+        spec = importlib.util.find_spec(pkg_name)
+    except (ImportError, ValueError):
+        return None
+    if spec is None:
+        return None
+    if spec.submodule_search_locations:
+        roots = [os.path.abspath(p) for p in spec.submodule_search_locations]
+    elif spec.origin:
+        roots = [os.path.dirname(os.path.abspath(spec.origin))]
+    else:
+        return None
+    for root in roots:
+        candidate = os.path.normpath(os.path.join(root, rel_path))
+        if _is_within(candidate, [root]) and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def resolve_urdf_path(urdf_path: str) -> str:
+    """Resolve a local file path or package://<python_pkg>/<relpath> URDF URI."""
+    if not urdf_path.startswith("package://"):
+        return os.path.abspath(urdf_path)
+    rest = urdf_path[len("package://"):]
+    pkg_name, sep, rel_path = rest.partition("/")
+    if not pkg_name or not sep or not rel_path:
+        raise ValueError(f"Invalid package:// URDF path: {urdf_path}")
+    resolved = resolve_package_uri(urdf_path)
+    if resolved is None:
+        raise FileNotFoundError(
+            f"Could not resolve '{urdf_path}': check that Python package '{pkg_name}' is installed "
+            f"and contains '{rel_path}'."
+        )
+    return resolved
+
+
 def resolve_mesh_path(mesh_href: str) -> str | None:
+    if mesh_href.startswith("package://"):
+        pkg_resolved = resolve_package_uri(mesh_href)
+        if pkg_resolved is not None:
+            return pkg_resolved
+
     urdf_dir = get_urdf_dir()
     if not urdf_dir:
         return None
@@ -313,10 +364,43 @@ def serve_api_catchall(rest: str):
     return abort(404, f"Not found: {rest}")
 
 
+@app.route("/")
+def serve_frontend_index():
+    if FRONTEND_DIST_DIR and os.path.isfile(os.path.join(FRONTEND_DIST_DIR, "index.html")):
+        return send_from_directory(FRONTEND_DIST_DIR, "index.html")
+    return abort(404, "Frontend build not configured")
+
+
+@app.route("/<path:filename>")
+def serve_frontend_asset(filename: str):
+    if filename == "api" or filename.startswith("api/"):
+        return abort(404)
+    if FRONTEND_DIST_DIR and os.path.isdir(FRONTEND_DIST_DIR):
+        return send_from_directory(FRONTEND_DIST_DIR, filename)
+    return abort(404)
+
+
+def configure_app(
+    robot_urdf_path: str | None = None,
+    nudge_step: float = 0.01,
+    frame_step: int = 1,
+    frontend_dist_dir: str | None = None,
+) -> None:
+    global ROBOT_URDF_PATH, NUDGE_STEP, FRAME_STEP, FRONTEND_DIST_DIR
+    ROBOT_URDF_PATH = resolve_urdf_path(robot_urdf_path) if robot_urdf_path else None
+    NUDGE_STEP = nudge_step
+    FRAME_STEP = frame_step
+    FRONTEND_DIST_DIR = os.path.abspath(frontend_dist_dir) if frontend_dist_dir else None
+
+
 def main():
-    global ROBOT_URDF_PATH, NUDGE_STEP, FRAME_STEP
     parser = argparse.ArgumentParser(description="Robot Trajectory Editor Backend")
-    parser.add_argument("--robot-urdf", dest="robot_urdf_path", default=None, help="Path to robot URDF file")
+    parser.add_argument(
+        "--robot-urdf", "--robot_urdf_path",
+        dest="robot_urdf_path",
+        default=None,
+        help="Path to robot URDF file (local path or package://<python_pkg>/<relpath>)",
+    )
     parser.add_argument("--port", type=int, default=5000, help="Flask server port")
     parser.add_argument("--host", default="127.0.0.1", help="Flask server host")
     parser.add_argument("--nudge-step", type=float, default=0.01,
@@ -326,12 +410,15 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
-    ROBOT_URDF_PATH = args.robot_urdf_path
-    NUDGE_STEP = args.nudge_step
-    FRAME_STEP = args.frame_step
-
-    if ROBOT_URDF_PATH and ROBOT_URDF_PATH.startswith("package://"):
-        print(f"Warning: package:// URDF ({ROBOT_URDF_PATH}) - backend cannot resolve this. Use a local path.", file=sys.stderr)
+    try:
+        configure_app(
+            robot_urdf_path=args.robot_urdf_path,
+            nudge_step=args.nudge_step,
+            frame_step=args.frame_step,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     app.run(host=args.host, port=args.port, debug=args.debug)
 

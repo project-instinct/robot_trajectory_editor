@@ -112,3 +112,83 @@ def test_trajectory_optimize_runs_one_request_at_a_time(tmp_path, monkeypatch):
     for thread in threads:
         thread.join()
     assert not overlap[0]
+
+
+def test_resolve_package_uri_and_urdf_path(tmp_path, monkeypatch):
+    import importlib
+    import app as app_module
+
+    pkg_root = tmp_path / "fake_robot_pkg"
+    (pkg_root / "urdf").mkdir(parents=True)
+    (pkg_root / "meshes").mkdir(parents=True)
+    (pkg_root / "__init__.py").write_text("")
+    urdf_file = pkg_root / "urdf" / "robot.urdf"
+    urdf_file.write_text("<robot name='fake'/>")
+    mesh_file = pkg_root / "meshes" / "link.stl"
+    mesh_file.write_text("solid")
+    (tmp_path / "outside.urdf").write_text("outside")
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+
+    assert app_module.resolve_urdf_path("package://fake_robot_pkg/urdf/robot.urdf") == str(urdf_file)
+    assert app_module.resolve_mesh_path("package://fake_robot_pkg/meshes/link.stl") == str(mesh_file)
+
+    for bad in (
+        "package://fake_robot_pkg/../outside.urdf",
+        "package://nonexistent_pkg_xyz/urdf/robot.urdf",
+        "package://fake_robot_pkg/urdf/missing.urdf",
+    ):
+        try:
+            app_module.resolve_urdf_path(bad)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError(f"Expected FileNotFoundError for {bad}")
+
+    try:
+        app_module.resolve_urdf_path("package://onlypkg")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected ValueError for malformed package:// URI")
+
+
+def test_frontend_static_serving(tmp_path, monkeypatch):
+    import app as app_module
+
+    dist_dir = tmp_path / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html><body>Editor</body></html>")
+    (dist_dir / "assets" / "main.js").write_text("console.log('ok');")
+
+    monkeypatch.setattr(app_module, "FRONTEND_DIST_DIR", str(dist_dir))
+    client = app.test_client()
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"Editor" in resp.data
+
+    asset = client.get("/assets/main.js")
+    assert asset.status_code == 200
+    assert b"console.log" in asset.data
+
+    missing_api = client.get("/api/robot/nonexistent")
+    assert missing_api.status_code == 404
+
+
+def test_launch_cli_parses_both_urdf_flag_aliases():
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from robot_trajectory_editor.launch import build_parser
+
+    parser = build_parser()
+    a = parser.parse_args(["--robot-urdf", "/tmp/a.urdf", "--port", "5050", "--dev"])
+    assert a.robot_urdf_path == "/tmp/a.urdf"
+    assert a.port == 5050
+    assert a.dev is True
+
+    b = parser.parse_args(["--robot_urdf_path", "package://robot_description/urdf/robot.urdf"])
+    assert b.robot_urdf_path == "package://robot_description/urdf/robot.urdf"
+    assert b.dev is False

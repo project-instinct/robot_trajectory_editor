@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-trajectory-editor"
+version = "0.1.0"
+description = "Web-based editor for inspecting, repairing, and authoring robot joint and floating-base trajectories."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flask>=3.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+optimize = [
+    "scipy>=1.11",
+    "pin>=3.4,<4",
+    "cmeel-urdfdom>=4,<5",
+    "coal>=3,<4",
+    "trimesh>=4",
+    "rtree>=1",
+    "osqp>=1,<2",
+    "threadpoolctl>=3.1,<4",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+robot-trajectory-editor = "robot_trajectory_editor.launch:main"
+
+[tool.setuptools.packages.find]
+include = ["robot_trajectory_editor*"]
+exclude = ["robot_trajectory_editor.frontend*", "robot_trajectory_editor.backend.tests*"]
+
+[tool.setuptools.package-data]
+robot_trajectory_editor = ["frontend/dist/**/*", "frontend/dist/*"]
