@@ -31,6 +31,8 @@ export interface StoreState {
   nudgeStep: number
   /** Frame step applied by the Left/Right arrow keys (from backend /api/config). */
   frameStep: number
+  /** Where file pickers browse/save files (from backend /api/config). */
+  fileExplorerSide: 'client' | 'server'
   /** Active base-transform session slider values, or null when idle. */
   baseTransform: BaseTransform | null
   /** Trajectory snapshot the active base transform is recomputed from, and the
@@ -75,6 +77,7 @@ export interface StoreState {
   /** Move the selected channel's value at the current frame by ±nudgeStep. */
   nudgeSelectedChannel: (direction: 1 | -1) => void
   setFrameStep: (step: number) => void
+  setFileExplorerSide: (side: 'client' | 'server') => void
   /** Move the current frame by ±frameStep, clamped to the trajectory range. */
   stepFrame: (direction: 1 | -1) => void
   /** Fill the segment (or whole trajectory) of the selected channel with the
@@ -110,6 +113,7 @@ export const useStore = create<StoreState>((set, get) => ({
   robotPoseVersion: 0,
   nudgeStep: 0.01,
   frameStep: 1,
+  fileExplorerSide: 'client',
   baseTransform: null,
   baseTransformSource: null,
   baseTransformOrigin: null,
@@ -229,6 +233,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setFrameStep: (step) => set({ frameStep: step }),
+  setFileExplorerSide: (side) => set({ fileExplorerSide: side }),
 
   stepFrame: (direction) => {
     const { trajectory, currentFrame, frameStep } = get()

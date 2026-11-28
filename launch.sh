@@ -4,13 +4,15 @@ set -e
 URDF_ARG=""
 NUDGE_STEP_ARG=""
 FRAME_STEP_ARG=""
+FILE_EXPLORER_SIDE_ARG=""
 PORT=5000
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --robot-urdf) URDF_ARG="--robot-urdf $2"; shift 2 ;;
+        --robot-urdf|--robot_urdf_path) URDF_ARG="--robot-urdf $2"; shift 2 ;;
         --nudge-step) NUDGE_STEP_ARG="--nudge-step $2"; shift 2 ;;
         --frame-step) FRAME_STEP_ARG="--frame-step $2"; shift 2 ;;
+        --file-explorer-side) FILE_EXPLORER_SIDE_ARG="--file-explorer-side $2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -65,7 +67,7 @@ trap cleanup INT TERM
 
 echo "=== Starting Backend (Flask :$PORT) ==="
 cd "$BACKEND_DIR"
-"$PYTHON" app.py $URDF_ARG $NUDGE_STEP_ARG $FRAME_STEP_ARG --port "$PORT" &
+"$PYTHON" app.py $URDF_ARG $NUDGE_STEP_ARG $FRAME_STEP_ARG $FILE_EXPLORER_SIDE_ARG --port "$PORT" &
 BACKEND_PID=$!
 
 echo "=== Starting Frontend (Vite :5173) ==="

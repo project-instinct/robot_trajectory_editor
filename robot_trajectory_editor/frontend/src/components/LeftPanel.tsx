@@ -1,8 +1,20 @@
 import { useStore } from '../state/store'
 import { Trajectory } from '../state/Trajectory'
-import { parseTrajectory, saveTrajectoryFile, uploadRobotFolder, getRobotInfo, getRobotUrdfList } from '../api/client'
+import {
+  parseTrajectory,
+  saveTrajectoryFile,
+  uploadRobotFolder,
+  getRobotInfo,
+  getRobotUrdfList,
+  loadServerTrajectories,
+  saveServerTrajectory,
+  loadServerTerrain,
+  saveServerTerrain,
+  selectServerRobotUrdf,
+} from '../api/client'
 import { loadTerrain, exportTerrainObj } from '../three/Terrain'
 import { HelpModal } from './HelpModal'
+import { ServerFileModal, type ServerFileMode } from './ServerFileModal'
 import {
   resizeTrajectoryListBox,
   TRAJECTORY_LIST_MAX_HEIGHT,
@@ -29,8 +41,16 @@ interface LoadedTrajectory {
   trajectory: Trajectory
 }
 
+interface ServerPickerRequest {
+  action: 'load-trajectory' | 'load-trajectory-folder' | 'save-trajectory' | 'load-terrain' | 'save-terrain' | 'load-robot'
+  title: string
+  mode: ServerFileMode
+  extensions?: string[]
+  defaultFileName?: string
+}
+
 export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUploaded, onTrajectoryListWidthChange }: LeftPanelProps) {
-  const { setTrajectory, trajectory, setTrajectorySourceName } = useStore()
+  const { setTrajectory, trajectory, setTrajectorySourceName, trajectorySourceName, fileExplorerSide } = useStore()
   const [loadedTrajectories, setLoadedTrajectories] = useState<LoadedTrajectory[]>([])
   const [selectedTrajectoryIndex, setSelectedTrajectoryIndex] = useState(0)
   const [listSize, setListSize] = useState<{ width: number | null; height: number | null }>({ width: null, height: null })
@@ -40,6 +60,7 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   const [loadError, setLoadError] = useState('')
   const [showHelp, setShowHelp] = useState(false)
   const [terrainName, setTerrainName] = useState<string | null>(null)
+  const [serverPicker, setServerPicker] = useState<ServerPickerRequest | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const trajectoryFolderRef = useRef<HTMLInputElement>(null)
   const terrainInputRef = useRef<HTMLInputElement>(null)
@@ -67,6 +88,22 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
 
   useEffect(() => () => {
     listResizeCleanupRef.current?.()
+  }, [])
+
+  useEffect(() => {
+    const onSaveEvent = () => {
+      if (useStore.getState().fileExplorerSide !== 'server') return
+      const defaultName = `${useStore.getState().trajectorySourceName || 'trajectory'}.npz`
+      setServerPicker({
+        action: 'save-trajectory',
+        title: 'Save Trajectory',
+        mode: 'save-file',
+        extensions: ['.npz'],
+        defaultFileName: defaultName,
+      })
+    }
+    window.addEventListener('rte:save-trajectory', onSaveEvent)
+    return () => window.removeEventListener('rte:save-trajectory', onSaveEvent)
   }, [])
 
   const startListResize = (axis: TrajectoryListResizeAxis) => (e: React.PointerEvent<HTMLDivElement>) => {
@@ -172,7 +209,42 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
     setTrajectorySourceName(nextTrajectory.fileName)
   }
 
+  const handleLoadTrajectoryClick = () => {
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'load-trajectory',
+        title: 'Load Trajectory',
+        mode: 'open-files',
+        extensions: ['.npz'],
+      })
+      return
+    }
+    fileInputRef.current?.click()
+  }
+
+  const handleLoadTrajectoryFolderClick = () => {
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'load-trajectory-folder',
+        title: 'Load Trajectory Folder',
+        mode: 'open-dir',
+      })
+      return
+    }
+    trajectoryFolderRef.current?.click()
+  }
+
   const handleSaveTrajectory = async () => {
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'save-trajectory',
+        title: 'Save Trajectory',
+        mode: 'save-file',
+        extensions: ['.npz'],
+        defaultFileName: `${trajectorySourceName || 'trajectory'}.npz`,
+      })
+      return
+    }
     try {
       await saveTrajectoryFile(trajectory.toJSON())
     } catch (e) {
@@ -181,6 +253,15 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   }
 
   const handleLoadTerrain = () => {
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'load-terrain',
+        title: 'Load Terrain',
+        mode: 'open-file',
+        extensions: ['.obj', '.stl'],
+      })
+      return
+    }
     terrainInputRef.current?.click()
   }
 
@@ -197,6 +278,16 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
 
   const handleSaveTerrain = () => {
     if (!terrain) return
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'save-terrain',
+        title: 'Save Terrain',
+        mode: 'save-file',
+        extensions: ['.obj'],
+        defaultFileName: terrainName ? terrainName.replace(/\.(obj|stl)$/i, '.obj') : 'terrain.obj',
+      })
+      return
+    }
     const obj = exportTerrainObj(terrain)
     const blob = new Blob([obj], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -208,7 +299,65 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   }
 
   const handleLoadRobot = () => {
+    if (fileExplorerSide === 'server') {
+      setServerPicker({
+        action: 'load-robot',
+        title: 'Load Robot URDF',
+        mode: 'open-file',
+        extensions: ['.urdf'],
+      })
+      return
+    }
     robotFolderRef.current?.click()
+  }
+
+  const handleServerPickerConfirm = async (paths: string[]) => {
+    const picker = serverPicker
+    setServerPicker(null)
+    if (!picker || paths.length === 0) return
+
+    setLoadError('')
+    try {
+      if (picker.action === 'load-trajectory' || picker.action === 'load-trajectory-folder') {
+        const res = picker.action === 'load-trajectory'
+          ? await loadServerTrajectories({ paths })
+          : await loadServerTrajectories({ directory: paths[0] })
+        const loaded: LoadedTrajectory[] = res.trajectories.map(item => ({
+          name: item.name,
+          fileName: baseNameOf(item.name),
+          trajectory: Trajectory.fromJSON(item.data),
+        }))
+        if (loaded.length > 0) {
+          setLoadedTrajectories(loaded)
+          setSelectedTrajectoryIndex(0)
+          setTrajectory(loaded[0].trajectory)
+          setTrajectorySourceName(loaded[0].fileName)
+        } else if (res.errors.length === 0) {
+          setLoadError('No .npz trajectory files found.')
+        }
+        if (res.errors.length > 0) {
+          setLoadError(res.errors.join('\n'))
+        }
+      } else if (picker.action === 'save-trajectory') {
+        await saveServerTrajectory(paths[0], useStore.getState().trajectory.toJSON())
+      } else if (picker.action === 'load-terrain') {
+        const fileName = paths[0].split(/[\\/]/).pop() ?? paths[0]
+        const data = await loadServerTerrain(paths[0])
+        const group = await loadTerrain(data, fileName)
+        onLoadTerrain(group)
+        setTerrainName(fileName)
+      } else if (picker.action === 'save-terrain') {
+        if (!terrain) return
+        await saveServerTerrain(paths[0], exportTerrainObj(terrain))
+      } else if (picker.action === 'load-robot') {
+        await selectServerRobotUrdf(paths[0])
+        setShowRobotSelect(false)
+        onRobotUploaded(undefined)
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err))
+      console.error('Server file action failed:', err)
+    }
   }
 
   const handleRobotFolderChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -239,8 +388,8 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
   return (
     <div style={panelStyle}>
       <h3>Files</h3>
-      <button onClick={() => fileInputRef.current?.click()}>Load Trajectory</button>
-      <button onClick={() => trajectoryFolderRef.current?.click()}>Load Trajectory Folder</button>
+      <button onClick={handleLoadTrajectoryClick}>Load Trajectory</button>
+      <button onClick={handleLoadTrajectoryFolderClick}>Load Trajectory Folder</button>
       {loadedTrajectories.length > 1 && (
         <div
           ref={trajectoryListRef}
@@ -289,6 +438,16 @@ export function LeftPanel({ onLoadTerrain, terrain, onEditTerrain, onRobotUpload
       <button onClick={onEditTerrain}>Edit Terrain</button>
       <button onClick={() => setShowHelp(true)}>?</button>
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+      {serverPicker && (
+        <ServerFileModal
+          title={serverPicker.title}
+          mode={serverPicker.mode}
+          extensions={serverPicker.extensions}
+          defaultFileName={serverPicker.defaultFileName}
+          onConfirm={handleServerPickerConfirm}
+          onCancel={() => setServerPicker(null)}
+        />
+      )}
       {showRobotSelect && (
         <button onClick={handleLoadRobot}>Load Robot URDF</button>
       )}

@@ -21,6 +21,7 @@ function App() {
   const [terrain, setTerrain] = useState<THREE.Group | null>(null)
   const [showTerrainEditor, setShowTerrainEditor] = useState(false)
   const [urdfRelPath, setUrdfRelPath] = useState<string | undefined>(undefined)
+  const [robotReloadKey, setRobotReloadKey] = useState(0)
   const [leftWidth, setLeftWidth] = useState(280)
   const [trajectoryListPanelWidth, setTrajectoryListPanelWidth] = useState(0)
   const [rightWidth, setRightWidth] = useState(280)
@@ -28,7 +29,7 @@ function App() {
   const effectiveLeftWidth = Math.max(leftWidth, trajectoryListPanelWidth)
   const {
     trajectory, trajectoryVersion, currentFrame, pinnedLinks, isPlaying,
-    setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, undo,
+    setRobotModelLoaded, clearPinnedLinks, setSegment, setNudgeStep, setFrameStep, setFileExplorerSide, undo,
   } = useStore()
 
   // Drag-resize the left/right panels by their vertical divider handles.
@@ -67,9 +68,12 @@ function App() {
       .then(cfg => {
         if (typeof cfg.nudge_step === 'number') setNudgeStep(cfg.nudge_step)
         if (typeof cfg.frame_step === 'number') setFrameStep(cfg.frame_step)
+        if (cfg.file_explorer_side === 'client' || cfg.file_explorer_side === 'server') {
+          setFileExplorerSide(cfg.file_explorer_side)
+        }
       })
       .catch(() => { /* keep the default steps when the backend has no config endpoint */ })
-  }, [setNudgeStep, setFrameStep])
+  }, [setNudgeStep, setFrameStep, setFileExplorerSide])
 
   // Create the 3D viewport exactly once.
   useEffect(() => {
@@ -105,7 +109,7 @@ function App() {
     })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urdfRelPath])
+  }, [urdfRelPath, robotReloadKey])
 
   // Rebind trajectory joint names to the loaded robot when the trajectory changes.
   useEffect(() => {
@@ -151,8 +155,12 @@ function App() {
       if ((e.ctrlKey || e.metaKey) && (e.code === 'KeyS' || e.key.toLowerCase() === 's')) {
         e.preventDefault()
         if (!e.repeat) {
-          void saveTrajectoryFile(useStore.getState().trajectory.toJSON())
-            .catch(error => console.error('Failed to save trajectory:', error))
+          if (useStore.getState().fileExplorerSide === 'server') {
+            window.dispatchEvent(new CustomEvent('rte:save-trajectory'))
+          } else {
+            void saveTrajectoryFile(useStore.getState().trajectory.toJSON())
+              .catch(error => console.error('Failed to save trajectory:', error))
+          }
         }
         return
       }
@@ -236,6 +244,11 @@ function App() {
     }
   }, [])
 
+  const handleRobotUploaded = useCallback((relPath?: string) => {
+    setUrdfRelPath(relPath)
+    setRobotReloadKey(k => k + 1)
+  }, [])
+
   return (
     <div style={rootStyle}>
       <div style={mainRow}>
@@ -244,7 +257,7 @@ function App() {
             onLoadTerrain={handleLoadTerrain}
             terrain={terrain}
             onEditTerrain={() => setShowTerrainEditor(true)}
-            onRobotUploaded={setUrdfRelPath}
+            onRobotUploaded={handleRobotUploaded}
             onTrajectoryListWidthChange={setTrajectoryListPanelWidth}
           />
           <TargetPanel />

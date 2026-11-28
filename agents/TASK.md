@@ -190,7 +190,7 @@ This is the source code of a web-based robot trajectory editor. It allows users 
 
 - Please use common libraries for 3D visualization (e.g., Three.js, Babylon.js) to render the robot and terrain in the main window.
 
-- The package is installable via `pip install -e .` (exposing `python -m robot_trajectory_editor.launch` and the `robot-trajectory-editor` CLI command) so it can be launched from any working directory (e.g. `conda run -n <env> --no-capture-output python -m robot_trajectory_editor.launch ...`). By default, Flask serves the built frontend (`robot_trajectory_editor/frontend/dist/`) on a single port (`--port`, default `5000`); passing `--dev` runs the Vite dev server alongside Flask.
+- The package is installable via `pip install -e .` (exposing `python -m robot_trajectory_editor.launch` and the `robot-trajectory-editor` CLI command) so it can be launched from any working directory (e.g. `conda run -n <env> --no-capture-output python -m robot_trajectory_editor.launch ...`). By default, Flask serves the built frontend (`robot_trajectory_editor/frontend/dist/`) on a single port (`--port`, default `5000`); passing `--dev` runs the Vite dev server alongside Flask. Pass `--file-explorer-side {client,server}` (default `client`) to choose whether Load/Save file dialogs open the client browser file picker or an in-page file explorer browsing the server filesystem.
 
 - If the CLI launch command provides a robot urdf path (via `--robot-urdf` or `--robot_urdf_path`), the urdf path could be as follows:
 

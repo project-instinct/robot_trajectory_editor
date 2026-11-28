@@ -36,7 +36,7 @@ conda run -n <env> --no-capture-output python -m robot_trajectory_editor.launch 
 robot-trajectory-editor --robot-urdf /path/to/robot.urdf
 ```
 
-Then open http://localhost:5000. Both `--robot-urdf` and `--robot_urdf_path` are accepted, and `package://<python_pkg>/<relpath>` URDF paths are resolved against installed Python packages. Pass `--dev` to run the Vite dev server on `:5173` alongside Flask instead of serving `frontend/dist/`.
+Then open http://localhost:5000. Both `--robot-urdf` and `--robot_urdf_path` are accepted, and `package://<python_pkg>/<relpath>` URDF paths are resolved against installed Python packages. Pass `--file-explorer-side server` (default `client`) to browse/load/save files directly on the server filesystem via an in-page file explorer (useful on remote clusters). Pass `--dev` to run the Vite dev server on `:5173` alongside Flask instead of serving `frontend/dist/`.
 
 ### Dev script (`launch.sh`)
 

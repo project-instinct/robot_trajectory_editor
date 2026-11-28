@@ -42,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Frame step applied by Left/Right arrow keys (default: 1).",
     )
     parser.add_argument(
+        "--file-explorer-side",
+        choices=("client", "server"),
+        default="client",
+        help="Where file dialogs browse/save files: 'client' (browser) or 'server' (in-page).",
+    )
+    parser.add_argument(
         "--dev",
         action="store_true",
         help="Run Vite dev server (npm run dev on :5173) alongside Flask instead of serving frontend/dist/.",
@@ -70,6 +76,8 @@ def _launch_dev(args: argparse.Namespace) -> None:
         str(args.nudge_step),
         "--frame-step",
         str(args.frame_step),
+        "--file-explorer-side",
+        args.file_explorer_side,
     ]
     if args.robot_urdf_path:
         backend_cmd.extend(["--robot-urdf", args.robot_urdf_path])
@@ -136,6 +144,7 @@ def _launch_single_server(args: argparse.Namespace) -> None:
             nudge_step=args.nudge_step,
             frame_step=args.frame_step,
             frontend_dist_dir=FRONTEND_DIST_DIR,
+            file_explorer_side=args.file_explorer_side,
         )
     except (ValueError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

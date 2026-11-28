@@ -2,7 +2,11 @@ import type { TrajectoryJSON } from '../state/Trajectory'
 
 const BASE = '/api'
 
-export async function getConfig(): Promise<{ nudge_step: number; frame_step: number }> {
+export async function getConfig(): Promise<{
+  nudge_step: number
+  frame_step: number
+  file_explorer_side?: 'client' | 'server'
+}> {
   const res = await fetch(`${BASE}/config`)
   return res.json()
 }
@@ -159,4 +163,83 @@ export async function optimizeTrajectory(
   const result = await response.json()
   if (!response.ok && !result.trajectory) throw new Error(result.error || 'Trajectory Optimize failed')
   return result
+}
+
+export interface ServerFsEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  size?: number
+}
+
+export interface ServerFsListResponse {
+  path: string
+  parent: string | null
+  entries: ServerFsEntry[]
+}
+
+export async function listServerDir(path?: string, exts?: string[]): Promise<ServerFsListResponse> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (exts && exts.length > 0) params.set('ext', exts.join(','))
+  const qs = params.toString()
+  const res = await fetch(`${BASE}/fs/list${qs ? `?${qs}` : ''}`)
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || 'Failed to list server directory')
+  return body
+}
+
+export async function loadServerTrajectories(
+  request: { paths: string[] } | { directory: string },
+): Promise<{ trajectories: { path: string; name: string; data: TrajectoryJSON }[]; errors: string[] }> {
+  const res = await fetch(`${BASE}/fs/trajectory/load`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || 'Failed to load server trajectories')
+  return body
+}
+
+export async function saveServerTrajectory(path: string, trajectory: TrajectoryJSON): Promise<{ path: string }> {
+  const res = await fetch(`${BASE}/fs/trajectory/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, trajectory }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || 'Failed to save trajectory on server')
+  return body
+}
+
+export async function loadServerTerrain(path: string): Promise<string | ArrayBuffer> {
+  const res = await fetch(`${BASE}/fs/terrain?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || 'Failed to load server terrain')
+  }
+  return path.toLowerCase().endsWith('.stl') ? res.arrayBuffer() : res.text()
+}
+
+export async function saveServerTerrain(path: string, content: string): Promise<{ path: string }> {
+  const res = await fetch(`${BASE}/fs/terrain/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || 'Failed to save terrain on server')
+  return body
+}
+
+export async function selectServerRobotUrdf(path: string): Promise<{ urdf_path: string }> {
+  const res = await fetch(`${BASE}/fs/robot/select`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.error || 'Failed to select server URDF')
+  return body
 }

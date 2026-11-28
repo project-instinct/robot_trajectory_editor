@@ -19,6 +19,7 @@ ROBOT_URDF_PATH: str | None = None
 UPLOADED_ROBOT_DIR: str | None = None
 CURRENT_URDF_REL: str | None = None
 FRONTEND_DIST_DIR: str | None = None
+FILE_EXPLORER_SIDE: str = "client"
 NUDGE_STEP: float = 0.01
 # One Trajectory Optimize at a time: each run forks a worker pool and sets the
 # process-wide BLAS thread limit, which overlapping runs in the threaded
@@ -159,6 +160,7 @@ def editor_config():
     return jsonify({
         "nudge_step": NUDGE_STEP,
         "frame_step": FRAME_STEP,
+        "file_explorer_side": FILE_EXPLORER_SIDE,
     })
 
 
@@ -354,9 +356,189 @@ def serialize_trajectory_endpoint():
         return jsonify({"error": str(e)}), 400
 
 
+def _require_server_explorer():
+    if FILE_EXPLORER_SIDE != "server":
+        return jsonify({"error": "Server file explorer is disabled. Launch with --file-explorer-side server."}), 403
+    return None
+
+
+@app.route("/api/fs/list")
+def fs_list():
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    raw_path = request.args.get("path", "").strip()
+    target_dir = os.path.abspath(os.path.expanduser(raw_path)) if raw_path else os.getcwd()
+    if not os.path.isdir(target_dir):
+        return jsonify({"error": f"Directory not found: {target_dir}"}), 400
+
+    ext_param = request.args.get("ext", "").strip()
+    exts = tuple(e.strip().lower() for e in ext_param.split(",") if e.strip()) if ext_param else ()
+
+    entries = []
+    try:
+        with os.scandir(target_dir) as it:
+            for entry in it:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=True)
+                    if not is_dir and exts and not entry.name.lower().endswith(exts):
+                        continue
+                    item: dict[str, object] = {
+                        "name": entry.name,
+                        "path": os.path.join(target_dir, entry.name),
+                        "is_dir": is_dir,
+                    }
+                    if not is_dir:
+                        item["size"] = entry.stat(follow_symlinks=True).st_size
+                    entries.append(item)
+                except OSError:
+                    continue
+    except OSError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    entries.sort(key=lambda item: (not bool(item["is_dir"]), str(item["name"]).lower()))
+    parent = os.path.dirname(target_dir)
+    return jsonify({
+        "path": target_dir,
+        "parent": parent if parent != target_dir else None,
+        "entries": entries,
+    })
+
+
+@app.route("/api/fs/trajectory/load", methods=["POST"])
+def fs_load_trajectories():
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    payload = request.get_json()
+    if not isinstance(payload, dict):
+        return jsonify({"error": "JSON object required"}), 400
+
+    paths: list[str] = []
+    directory = payload.get("directory")
+    if isinstance(directory, str) and directory.strip():
+        root = os.path.abspath(os.path.expanduser(directory.strip()))
+        if not os.path.isdir(root):
+            return jsonify({"error": f"Directory not found: {root}"}), 400
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fname in sorted(filenames):
+                if fname.lower().endswith(".npz"):
+                    paths.append(os.path.join(dirpath, fname))
+        paths.sort()
+    elif isinstance(payload.get("paths"), list):
+        for p in payload["paths"]:
+            if isinstance(p, str) and p.strip():
+                paths.append(os.path.abspath(os.path.expanduser(p.strip())))
+    else:
+        return jsonify({"error": "Provide 'paths' or 'directory'"}), 400
+
+    trajectories = []
+    errors = []
+    base_root = os.path.abspath(os.path.expanduser(directory.strip())) if isinstance(directory, str) and directory.strip() else None
+    for p in paths:
+        if not os.path.isfile(p):
+            errors.append(f"{p}: File not found")
+            continue
+        try:
+            with open(p, "rb") as f:
+                data = parse_npz(f.read())
+            display_name = os.path.relpath(p, base_root) if base_root else os.path.basename(p)
+            trajectories.append({
+                "path": p,
+                "name": display_name,
+                "data": data,
+            })
+        except Exception as exc:
+            errors.append(f"{os.path.basename(p)}: {exc}")
+
+    return jsonify({"trajectories": trajectories, "errors": errors})
+
+
+@app.route("/api/fs/trajectory/save", methods=["POST"])
+def fs_save_trajectory():
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    payload = request.get_json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload.get("trajectory"):
+        return jsonify({"error": "Provide 'path' and 'trajectory'"}), 400
+
+    target = os.path.abspath(os.path.expanduser(payload["path"].strip()))
+    if not target.lower().endswith(".npz"):
+        target += ".npz"
+    try:
+        npz_bytes = serialize_npz(payload["trajectory"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(npz_bytes)
+        return jsonify({"status": "ok", "path": target})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/fs/terrain")
+def fs_load_terrain():
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    raw_path = request.args.get("path", "").strip()
+    if not raw_path:
+        return jsonify({"error": "Missing 'path' query parameter"}), 400
+    target = os.path.abspath(os.path.expanduser(raw_path))
+    if not os.path.isfile(target):
+        return jsonify({"error": f"Terrain file not found: {target}"}), 404
+    return send_file(target)
+
+
+@app.route("/api/fs/terrain/save", methods=["POST"])
+def fs_save_terrain():
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    payload = request.get_json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not isinstance(payload.get("content"), str):
+        return jsonify({"error": "Provide 'path' and 'content'"}), 400
+
+    target = os.path.abspath(os.path.expanduser(payload["path"].strip()))
+    if not target.lower().endswith(".obj"):
+        target += ".obj"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(payload["content"])
+        return jsonify({"status": "ok", "path": target})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/fs/robot/select", methods=["POST"])
+def fs_select_robot():
+    global ROBOT_URDF_PATH, UPLOADED_ROBOT_DIR, CURRENT_URDF_REL
+    denied = _require_server_explorer()
+    if denied is not None:
+        return denied
+
+    payload = request.get_json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("path"), str) or not payload["path"].strip():
+        return jsonify({"error": "Provide 'path' to a URDF file"}), 400
+
+    target = os.path.abspath(os.path.expanduser(payload["path"].strip()))
+    if not os.path.isfile(target):
+        return jsonify({"error": f"URDF file not found: {target}"}), 404
+    ROBOT_URDF_PATH = target
+    UPLOADED_ROBOT_DIR = None
+    CURRENT_URDF_REL = None
+    return jsonify({"status": "ok", "urdf_path": target})
+
+
 @app.route("/api/<path:rest>")
 def serve_api_catchall(rest: str):
-    if rest.startswith("robot/") or rest.startswith("trajectory/"):
+    if rest.startswith("robot/") or rest.startswith("trajectory/") or rest.startswith("fs/"):
         return abort(404)
     resolved = resolve_mesh_path(rest)
     if resolved and os.path.isfile(resolved):
@@ -385,12 +567,16 @@ def configure_app(
     nudge_step: float = 0.01,
     frame_step: int = 1,
     frontend_dist_dir: str | None = None,
+    file_explorer_side: str = "client",
 ) -> None:
-    global ROBOT_URDF_PATH, NUDGE_STEP, FRAME_STEP, FRONTEND_DIST_DIR
+    global ROBOT_URDF_PATH, NUDGE_STEP, FRAME_STEP, FRONTEND_DIST_DIR, FILE_EXPLORER_SIDE
+    if file_explorer_side not in ("client", "server"):
+        raise ValueError(f"Invalid file_explorer_side: {file_explorer_side!r} (expected 'client' or 'server')")
     ROBOT_URDF_PATH = resolve_urdf_path(robot_urdf_path) if robot_urdf_path else None
     NUDGE_STEP = nudge_step
     FRAME_STEP = frame_step
     FRONTEND_DIST_DIR = os.path.abspath(frontend_dist_dir) if frontend_dist_dir else None
+    FILE_EXPLORER_SIDE = file_explorer_side
 
 
 def main():
@@ -407,6 +593,8 @@ def main():
                         help="Value step applied by the Up/Down arrow keys on the selected edit target")
     parser.add_argument("--frame-step", type=int, default=1,
                         help="Frame step applied by the Left/Right arrow keys")
+    parser.add_argument("--file-explorer-side", choices=("client", "server"), default="client",
+                        help="Where file dialogs browse/save files: 'client' (browser) or 'server' (in-page)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
@@ -415,6 +603,7 @@ def main():
             robot_urdf_path=args.robot_urdf_path,
             nudge_step=args.nudge_step,
             frame_step=args.frame_step,
+            file_explorer_side=args.file_explorer_side,
         )
     except (ValueError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

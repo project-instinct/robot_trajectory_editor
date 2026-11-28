@@ -192,3 +192,80 @@ def test_launch_cli_parses_both_urdf_flag_aliases():
     b = parser.parse_args(["--robot_urdf_path", "package://robot_description/urdf/robot.urdf"])
     assert b.robot_urdf_path == "package://robot_description/urdf/robot.urdf"
     assert b.dev is False
+    assert b.file_explorer_side == "client"
+
+    c = parser.parse_args(["--file-explorer-side", "server"])
+    assert c.file_explorer_side == "server"
+
+
+def test_server_file_explorer_disabled_by_default(monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "FILE_EXPLORER_SIDE", "client")
+    client = app.test_client()
+    assert client.get("/api/config").get_json()["file_explorer_side"] == "client"
+    assert client.get("/api/fs/list").status_code == 403
+    assert client.post("/api/fs/trajectory/load", json={"paths": []}).status_code == 403
+
+
+def test_server_file_explorer_list_load_save_and_robot(tmp_path, monkeypatch):
+    import app as app_module
+    from npz_io import serialize_npz
+
+    monkeypatch.setattr(app_module, "FILE_EXPLORER_SIDE", "server")
+    client = app.test_client()
+    assert client.get("/api/config").get_json()["file_explorer_side"] == "server"
+
+    subdir = tmp_path / "motions"
+    subdir.mkdir()
+    sample = {
+        "framerate": 30.0,
+        "joint_names": ["j1"],
+        "joint_pos": [[0.1], [0.2]],
+        "base_pos_w": [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]],
+        "base_quat_w": [[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    }
+    npz_file = subdir / "walk.npz"
+    npz_file.write_bytes(serialize_npz(sample))
+    (subdir / "notes.txt").write_text("ignore")
+    terrain_file = tmp_path / "ground.obj"
+    terrain_file.write_text("v 0 0 0\n")
+    urdf_file = tmp_path / "bot.urdf"
+    urdf_file.write_text("<robot name='bot'/>")
+
+    # Directory listing with extension filter
+    res = client.get(f"/api/fs/list?path={subdir}&ext=.npz")
+    assert res.status_code == 200
+    names = [e["name"] for e in res.get_json()["entries"]]
+    assert names == ["walk.npz"]
+
+    # Load by file path and by folder
+    loaded = client.post("/api/fs/trajectory/load", json={"paths": [str(npz_file)]})
+    assert loaded.status_code == 200
+    assert len(loaded.get_json()["trajectories"]) == 1
+    assert loaded.get_json()["trajectories"][0]["name"] == "walk.npz"
+
+    loaded_dir = client.post("/api/fs/trajectory/load", json={"directory": str(tmp_path)})
+    assert loaded_dir.status_code == 200
+    assert len(loaded_dir.get_json()["trajectories"]) == 1
+
+    # Save trajectory on server
+    saved_path = tmp_path / "out" / "saved.npz"
+    save_res = client.post("/api/fs/trajectory/save", json={"path": str(saved_path), "trajectory": sample})
+    assert save_res.status_code == 200
+    assert saved_path.is_file()
+
+    # Load and save terrain on server
+    t_res = client.get(f"/api/fs/terrain?path={terrain_file}")
+    assert t_res.status_code == 200
+    assert b"v 0 0 0" in t_res.data
+
+    t_out = tmp_path / "edited.obj"
+    ts_res = client.post("/api/fs/terrain/save", json={"path": str(t_out), "content": "v 1 2 3\n"})
+    assert ts_res.status_code == 200
+    assert t_out.read_text() == "v 1 2 3\n"
+
+    # Select URDF on server
+    u_res = client.post("/api/fs/robot/select", json={"path": str(urdf_file)})
+    assert u_res.status_code == 200
+    assert app_module.ROBOT_URDF_PATH == str(urdf_file)
